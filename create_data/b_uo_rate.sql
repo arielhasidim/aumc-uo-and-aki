@@ -63,17 +63,16 @@ WITH
         FROM
             uo_with_intervals_sources_and_weight
         WHERE
-            -- Exclude all stays with ureteral stent or GU irrigation 
-            -- (See https://github.com/MIT-LCP/mimic-code/issues/745 for GU irrig.)
+            -- Exclude all stays with ureteral stent
             STAY_ID NOT IN (
                 SELECT
-                    STAY_ID
+                    admissionid AS STAY_ID
                 FROM
-                    `physionet-data.mimiciv_icu.outputevents`
+                    `original.numericitems`
                 WHERE
                     ITEMID IN (19922, 19921)
                 GROUP BY
-                    STAY_ID
+                    admissionid
             )
             -- Sanity check
             AND VALUE >= 0
