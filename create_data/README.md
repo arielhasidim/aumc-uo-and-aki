@@ -1,6 +1,6 @@
 # Creation of UO and AKI tables
 
-The code above is used to create hourly-adjusted UO tables for each ICU stay in the MIMIC-IV database, as well as to identify the onset and resolution of AKI events. These tables are meant to provide a reliable platform for future research to anyone who wishes to use them. To achieve this objective, it is necessary to run several SQL queries in a particular order. Additionally, we have included a coded workflow in R that can automatically run these queries. 
+The code above is used to create hourly-adjusted UO tables for each ICU stay in the AmsterdamUMCdb, as well as to identify the onset and resolution of AKI events. These tables are meant to provide a reliable platform for future research to anyone who wishes to use them. To achieve this objective, it is necessary to run several SQL queries in a particular order. Additionally, we have included a coded workflow in R that can automatically run these queries. 
 
 ## Instructions
 
@@ -20,7 +20,7 @@ or <kbd>Ctrl</kbd> + <kbd>⏎ Enter</kbd>)
 
 ## Structure of the resultant tables
 
-### `mimic_uo_and_aki.c_hourly_uo` table:
+### `aumc_uo_and_aki.c_hourly_uo` table:
 | Field name                      | Type     | Description                                                    |
 | ------------------------------- | -------- | -------------------------------------------------------------- |
 | STAY_ID                         | INTEGER  | ICU stay ID                                                    |
@@ -31,17 +31,15 @@ or <kbd>Ctrl</kbd> + <kbd>⏎ Enter</kbd>)
 | SIMPLE_SUM                      | FLOAT    | Simple raw urine output hourly summatio (for testing purposes) |
 | WEIGHT_ADMIT                    | FLOAT    | Patient weight at admission                                    |
 
-### `mimic_uo_and_aki.e_aki_analysis`:
+### `aumc_uo_and_aki.e_aki_analysis`:
 | Field name  | Type     | Description                                                       |
 | ----------- | -------- | ----------------------------------------------------------------- |
 | AKI_ID      | INTEGER  | Unique AKI event ID                                               |
 | SUBJECT_ID  | INTEGER  | Patient ID                                                        |
-| HADM_ID     | INTEGER  | Hospital Admission ID                                             |
 | STAY_ID     | INTEGER  | ICU stay ID                                                       |
 | WEIGHT      | FLOAT    | Admission weight                                                  |
 | AKI_START   | DATETIME | Date and time for AKI onset                                       |
 | AKI_STOP    | DATETIME | Date and time for AKI resolution                                  |
-| AKI_TYPE    | INTEGER  | Type by KDIGO criteria; 1 for UO event, 2 for sCr event           |
 | NO_START    | INTEGER  | Has there been identification of a shift from KDIGO stage 0 to >0 |
 | NO_END      | INTEGER  | Has there been identification of a shift from KDIGO stage >0 to 0 |
 | WORST_STAGE | INTEG    | The worst KDIGO stage in the event by AKI type                    |
