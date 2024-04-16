@@ -1,5 +1,5 @@
 SELECT
-  COUNT(STAY_ID) UO_records
+  *
 FROM
   `aumc_uo_and_aki.a_urine_output_raw`
 WHERE
@@ -9,7 +9,7 @@ WHERE
     FROM
       `original.numericitems`
     WHERE
-      ITEMID IN (226558, 226557) -- Urethral stent
+      ITEMID IN (19922, 19921, 8800) -- Urethral stent, Urine Incontinence
     GROUP BY
       admissionid
   )
@@ -17,3 +17,4 @@ WHERE
     VALUE > 5000
     OR VALUE < 0
   )
+  AND lower(SERVICE) != "mc"

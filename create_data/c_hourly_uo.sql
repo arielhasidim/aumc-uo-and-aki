@@ -92,13 +92,13 @@ WITH
         GREATEST(b.LAST_CHARTTIME, a.TIME_INTERVAL_STARTS),
         MINUTE
       ) / 60 PROPORTION,
-      b.VALIDITY,
       b.SOURCE
     FROM
       TIMES_WITH_INTERVALS a
       LEFT JOIN `aumc_uo_and_aki.b_uo_rate` b ON b.STAY_ID = a.STAY_ID
       AND b.CHARTTIME > a.TIME_INTERVAL_STARTS
       AND b.LAST_CHARTTIME < a.TIME_INTERVAL_FINISH
+      AND VALIDITY = TRUE
   ),
   -- summing up rated per each hour by its proportion only if valid
   CALCULATION AS (
@@ -123,8 +123,6 @@ WITH
       ) / 60 AS PROPORTION_COVERED
     FROM
       INTERVALS_WITH_RATES
-    WHERE
-      VALIDITY = TRUE
     GROUP BY
       STAY_ID,
       T_PLUS,
@@ -134,27 +132,26 @@ WITH
   -- final table. 
   -- HOURLY_VALID_WEIGHTED_MEAN_RATE is presented only when we have valid rate for most of the hour
   -- also showing next to each hour simple uo value sum for comparison
-SELECT
-  a.STAY_ID,
-  a.T_PLUS,
-  a.TIME_INTERVAL_STARTS,
-  a.TIME_INTERVAL_FINISH,
-  IF(
-    a.PROPORTION_COVERED > 0.5,
-    a.HOURLY_WEIGHTED_MEAN_RATE,
-    NULL
-  ) HOURLY_VALID_WEIGHTED_MEAN_RATE,
-  IFNULL(SUM(b.VALUE), 0) SIMPLE_SUM,
-  CASE
-      WHEN weightgroup LIKE '59' THEN 55
-      WHEN weightgroup LIKE '60' THEN 65
-      WHEN weightgroup LIKE '70' THEN 75
-      WHEN weightgroup LIKE '80' THEN 85
-      WHEN weightgroup LIKE '90' THEN 95
-      WHEN weightgroup LIKE '100' THEN 105
-      WHEN weightgroup LIKE '110' THEN 115
-      ELSE 80 --mean weight for all years
-  END AS WEIGHT_ADMIT
+SELECT a.STAY_ID,
+a.T_PLUS,
+a.TIME_INTERVAL_STARTS,
+a.TIME_INTERVAL_FINISH,
+IF(
+  a.PROPORTION_COVERED > 0.5,
+  a.HOURLY_WEIGHTED_MEAN_RATE,
+  NULL
+) HOURLY_VALID_WEIGHTED_MEAN_RATE,
+IFNULL(SUM(b.VALUE), 0) SIMPLE_SUM,
+CASE
+  WHEN c.weightgroup LIKE "%59%" THEN 55
+  WHEN c.weightgroup LIKE "%60%" THEN 65
+  WHEN c.weightgroup LIKE "%70%" THEN 75
+  WHEN c.weightgroup LIKE "%80%" THEN 85
+  WHEN c.weightgroup LIKE "%90%" THEN 95
+  WHEN c.weightgroup LIKE "%100%" THEN 105
+  WHEN c.weightgroup LIKE "%110%" THEN 115
+  ELSE NULL
+END AS WEIGHT_ADMIT
 FROM
   CALCULATION a
   LEFT JOIN `aumc_uo_and_aki.a_urine_output_raw` b ON b.STAY_ID = a.STAY_ID

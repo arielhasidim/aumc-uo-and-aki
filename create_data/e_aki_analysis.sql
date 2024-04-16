@@ -6,10 +6,9 @@ WITH preceding_staging_uo AS (
         -- Joins every hourly KDIGO-UO staging with its preceding stage in the same hospital admission
         SELECT
             a.stay_id,
-            a.hadm_id,
             a.charttime,
             a.aki_stage_uo,
-            -- Preceding KDIGO-UO staging in hospital admission:
+            -- Preceding KDIGO-UO staging in icu admission:
             ARRAY_AGG(
                 b.aki_stage_uo
                 ORDER BY
@@ -21,14 +20,13 @@ WITH preceding_staging_uo AS (
             DATETIME_DIFF(a.charttime, MAX(b.charttime), HOUR) time_from_last_stage,
         FROM
             `aumc_uo_and_aki.d3_kdigo_stages` a
-            LEFT JOIN `aumc_uo_and_aki.d3_kdigo_stages` b ON b.hadm_id = a.hadm_id
+            LEFT JOIN `aumc_uo_and_aki.d3_kdigo_stages` b ON b.stay_id = a.stay_id
             AND b.charttime < a.charttime
             AND b.aki_stage_uo IS NOT NULL
         WHERE
             a.aki_stage_uo IS NOT NULL
         GROUP BY
             a.stay_id,
-            a.hadm_id,
             a.charttime,
             a.aki_stage_uo
     ),
@@ -37,7 +35,6 @@ WITH preceding_staging_uo AS (
         -- following stage in the same hospital admission
         SELECT
             a.stay_id,
-            a.hadm_id,
             a.charttime,
             a.aki_stage_uo,
             a.preceding_uo_stage,
@@ -54,12 +51,11 @@ WITH preceding_staging_uo AS (
             DATETIME_DIFF(MIN(c.charttime), a.charttime, HOUR) time_to_next_stage
         FROM
             preceding_staging_uo a
-            LEFT JOIN `aumc_uo_and_aki.d3_kdigo_stages` c ON c.hadm_id = a.hadm_id
+            LEFT JOIN `aumc_uo_and_aki.d3_kdigo_stages` c ON c.stay_id = a.stay_id
             AND c.charttime > a.charttime
             AND c.aki_stage_uo IS NOT NULL
         GROUP BY
             a.stay_id,
-            a.hadm_id,
             a.charttime,
             a.aki_stage_uo,
             a.preceding_uo_stage,
@@ -83,11 +79,10 @@ WITH preceding_staging_uo AS (
         SELECT
             ROW_NUMBER() OVER (
                 ORDER BY
-                    starts.hadm_id,
+                    starts.stay_id,
                     starts.charttime
             ) AS temp_id, -- Temporary unique ID
             starts.stay_id,
-            starts.hadm_id,
             starts.charttime aki_uo_starts,
             CASE
                 WHEN starts.preceding_uo_stage IS NULL THEN 1
@@ -140,11 +135,10 @@ WITH preceding_staging_uo AS (
                         OR following_uo_stage IS NULL
                         OR time_to_next_stage >= 6
                     ) 
-            ) AS ends ON ends.hadm_id = starts.hadm_id
+            ) AS ends ON ends.stay_id = starts.stay_id
             AND ends.charttime >= starts.charttime
         GROUP BY
             starts.stay_id,
-            starts.hadm_id,
             starts.charttime,
             starts.preceding_uo_stage,
             starts.time_from_last_stage
@@ -154,7 +148,6 @@ WITH preceding_staging_uo AS (
         SELECT
             a.temp_id,
             a.stay_id,
-            a.hadm_id,
             IF(b.temp_id IS NULL, 0, 1) AS just_before,
             a.aki_uo_starts,
             a.no_start,
@@ -163,10 +156,10 @@ WITH preceding_staging_uo AS (
             a.no_end
         FROM
             discrete_oliguric_akis a
-            LEFT JOIN discrete_oliguric_akis b ON b.hadm_id = a.hadm_id
+            LEFT JOIN discrete_oliguric_akis b ON b.stay_id = a.stay_id
             AND b.aki_uo_starts < a.aki_uo_starts
             AND b.aki_uo_ends > DATE_ADD(a.aki_uo_starts, INTERVAL -3 HOUR)
-            LEFT JOIN discrete_oliguric_akis c ON c.hadm_id = a.hadm_id
+            LEFT JOIN discrete_oliguric_akis c ON c.stay_id = a.stay_id
             AND c.aki_uo_starts > a.aki_uo_starts
             AND c.aki_uo_starts < DATE_ADD(a.aki_uo_ends, INTERVAL 3 HOUR)
     ),
@@ -175,7 +168,6 @@ WITH preceding_staging_uo AS (
         SELECT
             temp_id,
             stay_id,
-            hadm_id,
             aki_uo_starts,
             no_start,
             aki_uo_ends,
@@ -189,7 +181,6 @@ WITH preceding_staging_uo AS (
         SELECT
             a.temp_id,
             a.stay_id,
-            a.hadm_id,
             a.aki_uo_starts,
             a.no_start,
             MIN(b.aki_uo_ends) aki_uo_ends,
@@ -202,7 +193,7 @@ WITH preceding_staging_uo AS (
             ) [OFFSET(0)] no_end
         FROM
             adjacent_uo_akis a
-            LEFT JOIN adjacent_uo_akis b ON b.hadm_id = a.hadm_id
+            LEFT JOIN adjacent_uo_akis b ON b.stay_id = a.stay_id
             AND b.aki_uo_starts > a.aki_uo_starts
             AND b.just_before = 1
             AND b.just_after = 0
@@ -212,7 +203,6 @@ WITH preceding_staging_uo AS (
         GROUP BY
             a.temp_id,
             a.stay_id,
-            a.hadm_id,
             a.aki_uo_starts,
             a.no_start
     ),
@@ -223,7 +213,7 @@ WITH preceding_staging_uo AS (
             MAX(b.aki_stage_uo) WORST_STAGE
         FROM
             bridged_uo_akis a
-            LEFT JOIN `aumc_uo_and_aki.d3_kdigo_stages` b ON b.hadm_id = a.hadm_id
+            LEFT JOIN `aumc_uo_and_aki.d3_kdigo_stages` b ON b.stay_id = a.stay_id
             AND b.charttime >= a.aki_uo_starts
             AND b.charttime < a.aki_uo_ends
         GROUP BY
@@ -233,13 +223,21 @@ WITH preceding_staging_uo AS (
 SELECT
     ROW_NUMBER() OVER (
         ORDER BY
-            b.SUBJECT_ID,
+            b.patientid,
             a.aki_uo_starts
     ) AS AKI_ID,
-    b.SUBJECT_ID,
-    b.HADM_ID,
+    b.patientid SUBJECT_ID,
     a.STAY_ID,
-    IFNULL(c.WEIGHT_ADMIT, c.WEIGHT) WEIGHT,
+    CASE
+        WHEN b.weightgroup LIKE "%59%" THEN 55
+        WHEN b.weightgroup LIKE "%60%" THEN 65
+        WHEN b.weightgroup LIKE "%70%" THEN 75
+        WHEN b.weightgroup LIKE "%80%" THEN 85
+        WHEN b.weightgroup LIKE "%90%" THEN 95
+        WHEN b.weightgroup LIKE "%100%" THEN 105
+        WHEN b.weightgroup LIKE "%110%" THEN 115
+        ELSE NULL
+    END AS WEIGHT,
     a.aki_uo_starts AS AKI_START,
     a.aki_uo_ends AS AKI_STOP,
     a.no_start AS NO_START,
@@ -247,9 +245,8 @@ SELECT
     d.WORST_STAGE
 FROM
     bridged_uo_akis a
-    LEFT JOIN `physionet-data.mimiciv_icu.icustays` b ON a.stay_id = b.stay_id
-    LEFT JOIN `physionet-data.mimiciv_derived.first_day_weight` c ON c.stay_id = a.stay_id
+    LEFT JOIN `original.admissions` b ON a.stay_id = b.admissionid
     LEFT JOIN worst_staging d ON d.temp_id = a.temp_id
 ORDER BY
-    b.SUBJECT_ID,
+    b.patientid,
     a.aki_uo_starts

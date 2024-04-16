@@ -10,6 +10,16 @@ WHERE
         FROM
             `original.numericitems`
         WHERE
+            ITEMID IN (8800) -- Incontinence (Urine leakage)
+        GROUP BY
+            admissionid
+    )
+    AND STAY_ID NOT IN (
+        SELECT
+            admissionid AS STAY_ID
+        FROM
+            `original.numericitems`
+        WHERE
             ITEMID IN (19921, 19922) -- Urethral stent
         GROUP BY
             admissionid

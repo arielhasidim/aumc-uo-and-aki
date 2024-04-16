@@ -10,7 +10,7 @@ WITH
                     INTERVAL CAST((admittedat / 1000) AS INT64) SECOND
                 )
                 ELSE DATETIME_ADD(
-                    "2009-01-01 00:00:00",
+                    "2010-01-01 00:00:00",
                     INTERVAL CAST((admittedat / 1000) AS INT64) SECOND
                 )
             END AS admit_time
@@ -38,7 +38,7 @@ SELECT
         WHEN n.ITEMID = 8794 THEN "Foley"
         WHEN n.ITEMID = 8796 THEN "Suprapubic"
         WHEN n.ITEMID = 8798 THEN "Void"
-        WHEN n.ITEMID = 8800 THEN "Straight Cath"
+        WHEN n.ITEMID = 8800 THEN "Incontinence (urine leakage)"
         WHEN n.ITEMID = 8803 THEN "Ileoconduit"
         WHEN n.ITEMID = 10743 THEN "L Nephrostomy"
         WHEN n.ITEMID = 10745 THEN "R Nephrostomy"
@@ -54,7 +54,7 @@ WHERE
         8794, --UrineCAD ("Foley")
         8796, --UrineSupraPubis ("Suprapubic")
         8798, --UrineSpontaan ("Void")
-        8800, --UrineIncontinentie ("?")
+        8800, --UrineIncontinentie ("Incontinence (urine leakage)")
         8803, --UrineUP ("Ileoconduit")
         10743, --Nefrodrain li Uit ("L Nephrostomy")
         10745, --Nefrodrain re Uit ("R Nephrostomy")

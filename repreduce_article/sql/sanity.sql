@@ -1,4 +1,3 @@
-
 SELECT
   COUNT(STAY_ID) UO_records
 FROM
@@ -10,10 +9,21 @@ WHERE
     FROM
       `original.numericitems`
     WHERE
-      ITEMID IN (226558, 226557) -- Urethral stent
+      ITEMID IN (8800) -- Incontinence (Urine leakage)
     GROUP BY
       admissionid
   )
+  AND STAY_ID NOT IN (
+    SELECT
+      admissionid AS STAY_ID
+    FROM
+      `original.numericitems`
+    WHERE
+      ITEMID IN (19921, 19922) -- Urethral stent
+    GROUP BY
+      admissionid
+  )
+  AND LOWER(SERVICE) != "mc"
   AND (
     VALUE > 5000
     OR VALUE < 0

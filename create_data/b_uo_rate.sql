@@ -12,20 +12,21 @@ WITH
             a.VALUE,
             a.CHARTTIME,
             a.ITEMID,
+            a.SERVICE,
             a.LABEL,
             MAX(b.CHARTTIME) AS LAST_CHARTTIME,
             (
                 DATETIME_DIFF(a.CHARTTIME, MAX(b.CHARTTIME), SECOND) / 60
             ) AS TIME_INTERVAL,
             CASE
-                WHEN weightgroup LIKE '59' THEN 55
-                WHEN weightgroup LIKE '60' THEN 65
-                WHEN weightgroup LIKE '70' THEN 75
-                WHEN weightgroup LIKE '80' THEN 85
-                WHEN weightgroup LIKE '90' THEN 95
-                WHEN weightgroup LIKE '100' THEN 105
-                WHEN weightgroup LIKE '110' THEN 115
-                ELSE 80 --mean weight for all years
+                WHEN w.weightgroup LIKE "%59%" THEN 55
+                WHEN w.weightgroup LIKE "%60%" THEN 65
+                WHEN w.weightgroup LIKE "%70%" THEN 75
+                WHEN w.weightgroup LIKE "%80%" THEN 85
+                WHEN w.weightgroup LIKE "%90%" THEN 95
+                WHEN w.weightgroup LIKE "%100%" THEN 105
+                WHEN w.weightgroup LIKE "%110%" THEN 115
+                ELSE NULL
             END AS WEIGHT_ADMIT
         FROM
             `aumc_uo_and_aki.a_urine_output_raw` a
@@ -47,7 +48,8 @@ WITH
             a.CHARTTIME,
             a.ITEMID,
             a.LABEL,
-            w.weightgroup
+            w.weightgroup,
+            a.SERVICE
     ),
     excluding AS (
         -- excluding unreliable ICU stays
@@ -59,24 +61,27 @@ WITH
             CHARTTIME,
             LAST_CHARTTIME,
             TIME_INTERVAL,
-            WEIGHT_ADMIT
+            WEIGHT_ADMIT,
+            SERVICE
         FROM
             uo_with_intervals_sources_and_weight
         WHERE
             -- Exclude all stays with ureteral stent
+            -- for amsterdamumcdb: also excluding urine Incontinence (8800)
             STAY_ID NOT IN (
                 SELECT
                     admissionid AS STAY_ID
                 FROM
                     `original.numericitems`
                 WHERE
-                    ITEMID IN (19922, 19921)
+                    ITEMID IN (19922, 19921, 8800)
                 GROUP BY
                     admissionid
             )
             -- Sanity check
             AND VALUE >= 0
             AND VALUE < 5000
+            AND lower(SERVICE) != "mc"          
     ),
     interval_precentiles_approx AS (
         -- Calculating 95th precentile for all and for less than 20ml urine output recoreds by source type
@@ -123,7 +128,7 @@ WITH
                 AND TIME_INTERVAL <= GREATEST(percentile95_20, percentile95_all) THEN TRUE
                 WHEN a.SOURCE = 'Condom Cath'
                 AND TIME_INTERVAL <= GREATEST(percentile95_20, percentile95_all) THEN TRUE
-                WHEN a.SOURCE = 'Straight Cath'
+                WHEN a.SOURCE = 'Incontinence (urine leakage)'
                 AND TIME_INTERVAL <= GREATEST(percentile95_20, percentile95_all) THEN TRUE
                 WHEN a.SOURCE = 'Void'
                 AND TIME_INTERVAL <= GREATEST(percentile95_20, percentile95_all) THEN TRUE
@@ -137,12 +142,10 @@ WITH
                 AND a.SOURCE LIKE "%Nephrostomy"
             )
     )
-
     -- Hourly rate is finally calculated
 SELECT
     a.*,
-    VALUE / (TIME_INTERVAL / 60) AS HOURLY_RATE,
-    s.location SERVICE
+    VALUE / (TIME_INTERVAL / 60) AS HOURLY_RATE
 FROM
     added_validity a
     LEFT JOIN `original.admissions` s ON s.admissionid = a.STAY_ID

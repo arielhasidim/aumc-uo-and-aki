@@ -1,7 +1,7 @@
 ---
-title: "From Arbitrary Charting to Precise Hourly Urine Rates and AKI Staging: A Comprehensive ICU Database Analysis"
-author: "Ariel A Hasidim, Matthew A Klein, Itamar Ben Shitrit, Lior Fuchs"
-date: "2023-05-07"
+title: "Method for computerized standardization of arbitrary urinary output charting for the diagnosis of AKI: A derivation-validation proof of concept study using two multicenter databases"
+author: "Ariel Avraham Hasidim, Matthew Adam Klein, Itamar Ben Shitrit, Karny Ilan, Sharon Einav, Lior Fuchs"
+date: "April 7th, 2024"
 output: 
   html_document:
     code_folding: hide
@@ -41,15 +41,16 @@ con <- dbConnect(
   bigrquery::bigquery(),
   project = "physionet-data",
   dataset = "mimiciv_icu",
-  billing = "amsterdamumcdb102"
-  # billing = params$billing_account
+  billing = params$billing_account
 )
 
 dbListTables(con)
 ```
 
-```{r Quering BigQuery, cache=FALSE, include=FALSE}
+```{r Quering BigQuery, cache=TRUE, include=FALSE}
 raw_uo <- dbGetQuery(con, "SELECT * FROM `aumc_uo_and_aki.a_urine_output_raw`")
+
+raw_uo_eligible <- dbGetQuery(con, statement = read_file('sql/raw eligible.sql'))
 
 raw_uo_excluions_duplicates <- dbGetQuery(con, statement = read_file('sql/raw_uo_excluions_duplicates.sql'))
 
@@ -64,9 +65,15 @@ uo_ml_kg_hr <- hourly_uo %>%
   drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
   mutate(ML_KG_HR = HOURLY_VALID_WEIGHTED_MEAN_RATE / WEIGHT_ADMIT)
 
-# table_1 <- dbGetQuery(con, statement = read_file('sql/tbl1.sql'))
+kdigo_uo_stage <-
+  dbGetQuery(con,
+             "SELECT * FROM `aumc_uo_and_aki.d3_kdigo_stages` WHERE aki_stage_uo IS NOT NULL")
+
+table_1 <- dbGetQuery(con, statement = read_file('sql/tbl1.sql'))
 
 tbl1_aki <- dbGetQuery(con, statement = read_file('sql/tbl1 aki.sql'))
+
+aki_epi <- dbGetQuery(con, statement = read_file('sql/aki epi.sql'))
 
 akis <- dbGetQuery(con, statement = read_file('sql/akis with mortality.sql'))
 
@@ -76,7 +83,7 @@ akis <- dbGetQuery(con, statement = read_file('sql/akis with mortality.sql'))
 ```
 \ 
 
-This is a full reproduction of the study's results.
+This is a full reproduction for the results of the validation cohort (AUMCdb).
 
 \ 
 
@@ -95,42 +102,54 @@ This is a full reproduction of the study's results.
 
 # Population and Study's Sample
 
+**Total I/M-CU stays in aumc:**
+
+```{r}
+print("Medium and intensive care:")
+dbGetQuery(con, "SELECT count(*) FROM `original.admissions`")
+
+print("Intensive care only:")
+dbGetQuery(con, "SELECT count(*) FROM `original.admissions` WHERE lower(location) != 'mc'")
+```
+
+\
+
+**ICU stays with UO records (eligible):**
+
+```{r}
+print("Raw UO per service type:")
+table(raw_uo$SERVICE)
+
+print("Total eligible ICU admissions:")
+raw_uo %>% filter(SERVICE != "MC") %>%
+  {n_distinct(.$STAY_ID)}
+```
+
+\
+
+**Patients with UO records:**
+
+```{r}
+raw_uo %>% filter(SERVICE != "MC") %>%
+  {n_distinct(.$SUBJECT_ID)}
+```
+
+\ 
+
 **Count all UO records (before exclusions):**
 
 ```{r}
-all_rows_count <- nrow(raw_uo)
+all_rows_count <- nrow(raw_uo %>% filter(SERVICE != "MC"))
 all_rows_count
 ```
 
 \ 
-**Count distinct patients:**
 
-```{r}
-n_distinct(raw_uo$SUBJECT_ID)
-```
-
-
-\ 
-**Count distinct ICU stays:**
-
-```{r}
-n_distinct(raw_uo$STAY_ID)
-```
-
-\ 
-**Count total ICU days of UO monitoring:**
-
-```{r}
-hourly_uo %>% 
-  nrow() / 24
-```
-
-\ 
 
 ## Figure for Raw UO Records Data
 Frequency of urine output charting by source
 ```{r}
-raw_uo %>% 
+bS3a <- raw_uo %>% 
   mutate(
     LABEL = case_when(
       LABEL == "GU Irrigant/Urine Volume Out" ~ "GU Irrig. Out",
@@ -152,6 +171,8 @@ raw_uo %>%
          plot.subtitle = element_text(size = 10, face = "bold"),
          plot.caption = element_text(face = "italic")
        )
+
+bS3a
 ```
 
 \ 
@@ -206,14 +227,23 @@ In conclusion, most of the records have different values, and thus human error i
 
 Used for *Figure 2. Overview of study's process.*
 
+**ICU type exclusion:**
+
+```{r}
+dbGetQuery(con, statement = read_file('sql/service_type_exclusion.sql'))
+```
+
+|       Show full SQL query -----\>
+
+```{sql, class.source = 'fold-hide', eval=FALSE, code = readLines("sql/service_type_exclusion.sql")}
+```
+
 \ 
 
 **Uretral stent exclusion:**
 
 ```{r}
-dbGetQuery(con, statement = read_file('sql/ure_stent_exclusion.sql')) %>%
-  gt() %>%
-  fmt_number(use_seps = TRUE, decimals = 0)
+dbGetQuery(con, statement = read_file('sql/ure_stent_exclusion.sql'))
 ```
 
 |       Show full SQL query -----\>
@@ -221,14 +251,27 @@ dbGetQuery(con, statement = read_file('sql/ure_stent_exclusion.sql')) %>%
 ```{sql, class.source = 'fold-hide', eval=FALSE, code = readLines("sql/ure_stent_exclusion.sql")}
 ```
 
+
 \ 
+
+**Urine incontinence exclusion:**
+
+```{r}
+dbGetQuery(con, statement = read_file('sql/Incontinence_exclusion.sql'))
+```
+
+|       Show full SQL query -----\>
+
+```{sql, class.source = 'fold-hide', eval=FALSE, code = readLines("sql/Incontinence_exclusion.sql")}
+```
+
+\ 
+
 
 **Not passing sanity check:**
 
 ```{r}
-dbGetQuery(con, statement = read_file('sql/sanity.sql')) %>%
-  gt() %>%
-  fmt_number(use_seps = TRUE, decimals = 0)
+dbGetQuery(con, statement = read_file('sql/sanity.sql'))
 ```
 
 |       Show full SQL query -----\>
@@ -241,9 +284,7 @@ dbGetQuery(con, statement = read_file('sql/sanity.sql')) %>%
 **Total raw urine output after exclusion ("eligible records, before collection time"):**
 
 ```{r}
-dbGetQuery(con, statement = read_file('sql/raw eligible.sql')) %>%
-  gt() %>%
-  fmt_number(use_seps = TRUE, decimals = 0)
+nrow(raw_uo_eligible)
 ```
 
 |       Show full SQL query -----\>
@@ -253,24 +294,33 @@ dbGetQuery(con, statement = read_file('sql/raw eligible.sql')) %>%
 
 \ 
 
+**Total icu stays after exclusion ("eligible icu admissions, before collection time"):**
+
+```{r}
+n_distinct(raw_uo_eligible$STAY_ID)
+```
+
 **Exclusion of first volume in each compartment per ICU stay:**
 
 ```{r}
 uo_rate_including_null_collection_period %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
   filter(is.na(TIME_INTERVAL)) %>%
   nrow()
 ```
 
 \ 
 
-**Proportion of valid hours covered:**
+**UO records with time intervals:**
 
 ```{r}
-nrow(hourly_uo %>%
-       filter(!is.na(HOURLY_VALID_WEIGHTED_MEAN_RATE))) / nrow(hourly_uo)
+uo_rate_including_null_collection_period %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
+  drop_na(TIME_INTERVAL) %>%
+  nrow()
 ```
 
-\ 
+\
 
 **Count UO records by anatomical compartment:**
 
@@ -285,13 +335,163 @@ uo_rate %>%
   ) %>%
            group_by(agg_group) %>%
    dplyr::summarise(N = n()
-  ) %>% 
-  arrange(desc(N)) %>% 
-  gt() %>%
-  fmt_number(use_seps = TRUE, decimals = 0)
+  )
+```
+
+\
+
+**ICU stays with UO records with time intervals:**
+
+```{r}
+print("all ICU stays:")
+uo_rate_including_null_collection_period %>%
+  {n_distinct(.$STAY_ID)}
+
+print("ICU stays with time intervals:")
+uo_rate_including_null_collection_period %>%
+                     drop_na(TIME_INTERVAL) %>%
+  {n_distinct(.$STAY_ID)}
+
+print("ICU stays with UO records that does not  have time interval (no previous UO record in the same compartment:")
+uo_rate_including_null_collection_period %>%
+                     filter(is.na(TIME_INTERVAL)) %>%
+  {n_distinct(.$STAY_ID)}
+
+print("ICU stays dropped due to no UO records with time intervalst (no previous UO record in the same compartment:")
+(uo_rate_including_null_collection_period %>%
+                     filter(is.na(TIME_INTERVAL))) %>%
+  filter(!(STAY_ID %in% (uo_rate_including_null_collection_period %>%
+                     drop_na(TIME_INTERVAL))$STAY_ID)) %>%
+  {n_distinct(.$STAY_ID)}
+```
+
+\
+
+**Count total ICU days of UO monitoring for icu stays with time intervals:**
+
+```{r}
+hourly_uo %>%
+  filter(STAY_ID %in%
+           (uo_rate_including_null_collection_period %>%
+                     drop_na(TIME_INTERVAL))$STAY_ID) %>%
+  nrow() / 24
+```
+
+\
+
+**Hours of UO monitoring:**
+
+```{r}
+print("Eligible hours of UO monitoring:")
+hourly_uo %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
+  nrow()
+
+print("Valid hourly-adjusted UO monitoring hours:")
+hourly_uo %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
+  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+  nrow()
+
+print("ICU stays with valid hourly-adjusted UO monitoring hours:")
+hourly_uo %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
+  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+  {n_distinct(.$STAY_ID)}
+```
+
+\
+
+**Proportion of valid hours covered out of included hours of uo monitoring:**
+
+```{r}
+hourly_uo %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
+  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+  nrow() / hourly_uo %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
+  nrow()
 ```
 
 \ 
+
+**Hourly-adjusted UO with admission weights:**
+
+```{r}
+print("ICU stays with admission weight and valid hourly-adjusted UO:")
+hourly_uo %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
+  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
+  {n_distinct(.$STAY_ID)}
+
+print("Valid hourly-adjusted UO monitoring hours with admission weights:")
+hourly_uo %>%
+  filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
+  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
+  nrow()
+```
+\
+
+**ICU stays with calculated KDIGO-UO staging (at least six consecutive hours with valid charting of hourly-adjusted UO)**
+
+```{r}
+print("number of ICU stays with valid KDIGO-UO staging")
+kdigo_uo_stage %>% 
+  filter(stay_id %in% raw_uo_eligible$STAY_ID) %>%
+  {n_distinct(.$stay_id)}
+
+print("number of included hours with valid KDIGO-UO staging")
+kdigo_uo_stage %>% 
+  filter(stay_id %in% raw_uo_eligible$STAY_ID) %>%
+  nrow()
+```
+\
+
+**eligible first ICU admission to each patient for AKI analysis**
+
+```{r}
+first_icu_stay <-
+  dbGetQuery(
+    con,
+    "SELECT patientid, admissionid FIRST_STAY_ID_IN_PATIENT FROM `amsterdamumcdb102.original.admissions`
+where admissioncount = 1"
+  )
+
+print("number of first ICU stays with valid KDIGO-UO staging")
+kdigo_uo_stage %>% 
+  filter(stay_id %in% first_icu_stay$FIRST_STAY_ID_IN_PATIENT
+         & stay_id %in% raw_uo_eligible$STAY_ID) %>%
+  {n_distinct(.$stay_id)}
+
+print("number of valid hourly KDIGO-UO staging in first ICU stays")
+kdigo_uo_stage %>% 
+  filter(stay_id %in% first_icu_stay$FIRST_STAY_ID_IN_PATIENT
+         & stay_id %in% raw_uo_eligible$STAY_ID) %>%
+  nrow()
+```
+
+\
+
+**included ICU admissions for AKI analysis**
+```{r}
+print("number of first ICU stays (after exclusion criteria) with valid KDIGO-UO staging for the first 24-hours ins ICU stay")
+kdigo_uo_stage %>% 
+  filter(stay_id %in% aki_epi$STAY_ID) %>%
+  {n_distinct(.$stay_id)}
+
+print("number of valid hourly KDIGO-UO for those stays")
+kdigo_uo_stage %>% 
+  filter(stay_id %in% aki_epi$STAY_ID) %>%
+  nrow()
+```
+
+\ 
+
+## Inclusion/Exclusion Flowchart 
+
+```{r}
+knitr::include_graphics("flow chart.png")
+```
 
 ## Table 1 - Patient's characteristics
 
@@ -300,26 +500,9 @@ table_1$SERVICE <- as.factor(table_1$SERVICE)
 table_1$admission_age <- as.numeric(table_1$admission_age)
 table_1$weight_admit <- as.numeric(table_1$weight_admit)
 table_1$height_first <- as.numeric(table_1$height_first)
-table_1$creat_first <- as.numeric(table_1$creat_first)
-
-table_1 <- table_1 %>%
-  mutate(
-    race =
-      case_when(
-        grepl("asian", race, ignore.case = TRUE) ~ "Asian",
-        grepl("black", race, ignore.case = TRUE) ~ "African American",
-        grepl("white", race, ignore.case = TRUE) ~ "Caucasian",
-        grepl("hispanic", race, ignore.case = TRUE) ~ "Hispanic",
-        grepl("other", race, ignore.case = TRUE) ~ "Other",
-        grepl("native", race, ignore.case = TRUE) ~ "Other",
-        grepl("MULTIPLE", race, ignore.case = TRUE) ~ "Other",
-        grepl("PORTUGUESE", race, ignore.case = TRUE) ~ "Other",
-        grepl("SOUTH AMERICAN", race, ignore.case = TRUE) ~ "Other",
-        TRUE ~ as.character(NA)
-      )
-  )
 
 uo_for_table1 <- uo_rate_including_null_collection_period %>%
+  drop_na(TIME_INTERVAL) %>%
   group_by(STAY_ID) %>%
   summarise(
     count = n(),
@@ -335,20 +518,14 @@ t1a <- table_1 %>%
     admission_age,
     gender,
     weight_admit,
-    charlson_comorbidity_index,
-    sofa_first_day,
-    ckd,
     creat_first,
-    race,
     icu_days,
-    hospital_days,
     rrt_binary,
     hospital_expire_flag
   ) %>%
   tbl_summary(
     type = list(
       c(hospital_expire_flag,
-        ckd,
         rrt_binary) ~ "dichotomous",
       c(admission_age,
         weight_admit,
@@ -357,18 +534,14 @@ t1a <- table_1 %>%
     statistic = c(admission_age,
                   weight_admit,
                   creat_first) ~ "{mean} ({sd})",
+    digits = list(icu_days ~ 1),
     missing = "no",
     label = list(
       admission_age ~ "Age at Hospital Admission, years",
       gender ~ "Gender",
-      weight_admit ~ "Weight at ICU Admission, kg",
-      charlson_comorbidity_index ~ "CCI Score",
-      sofa_first_day ~ "SOFA Score at ICU Admission",
-      ckd ~ "CKD, Stage 1-4",
       creat_first ~ "First Creatinine, mg/dL",
-      race ~ "Ethnicity",
+      weight_admit ~ "Weight at ICU Admission, kg",
       icu_days ~ "Time in ICU, days",
-      hospital_days ~ "Time in hospital, days",
       rrt_binary ~ "Renal replacement therapy",
       hospital_expire_flag ~ "Mortality"
     )
@@ -475,31 +648,34 @@ uo_rate %>%
 ## Collection Periods
 
 ```{r}
-uo_rate %>% group_by(SOURCE) %>%
+bS6_a <- uo_rate %>% group_by(SOURCE) %>%
    dplyr::summarise(N = n(),
                    Mean = round(mean(TIME_INTERVAL),0),
                    SD = round(sd(TIME_INTERVAL),0),
+                   '5th' = round(quantile(TIME_INTERVAL, 0.05),0),
+                   '10th' = round(quantile(TIME_INTERVAL, 0.1),0),
                    '25th' = round(quantile(TIME_INTERVAL, 0.25),0),
                    '50th' = round(quantile(TIME_INTERVAL, 0.50),0),
                    '75th' = round(quantile(TIME_INTERVAL, 0.75),0),
                    '95th' = round(quantile(TIME_INTERVAL, 0.95),0),
-                   # Min = round(min(TIME_INTERVAL),0),
+                   Min = round(min(TIME_INTERVAL),0),
                    Max = round(max(TIME_INTERVAL),0)
   ) %>% 
   arrange(desc(N)) %>% 
   gt() %>%
-  fmt_number(use_seps = TRUE, decimals = 0) %>%
-  tab_source_note(
-    source_note = "The table displays statistical values for all included UO measurements, categorized by their sources, in minutes."
-  )
+  fmt_number(use_seps = TRUE, decimals = 0)
+
+bS6_a
 ```
 
 Collection Periods:
 
 ```{r}
-ggplot(data = uo_rate, aes(x = TIME_INTERVAL / 60)) +
+bS6_b <- ggplot(data = uo_rate, aes(x = TIME_INTERVAL / 60)) +
   geom_histogram(binwidth = 1) +
-  facet_wrap(~SOURCE, scales = "free") +
+  facet_wrap(~factor(SOURCE, levels=c('Foley', 'Suprapubic', 'Ileoconduit',
+                         'Void',
+                         'R Nephrostomy', 'L Nephrostomy')), scales = "free") +
   xlim(-1, 20) +
   labs(
           x = "Time interval (hr)",
@@ -510,6 +686,8 @@ ggplot(data = uo_rate, aes(x = TIME_INTERVAL / 60)) +
           plot.subtitle = element_text(size = 10, face = "bold"),
           plot.caption = element_text(face = "italic")
         )
+
+bS6_b
 ```
 
 \ 
@@ -517,28 +695,34 @@ ggplot(data = uo_rate, aes(x = TIME_INTERVAL / 60)) +
 ## Volumes and Collection Periods
 
 ```{r}
-S2_a <- uo_rate %>% group_by(SOURCE) %>%
+bS7_a <- uo_rate %>% group_by(SOURCE) %>%
   dplyr::summarise(N = n(),
                    Mean = round(mean(VALUE),0),
                    SD = round(sd(VALUE),0),
+                   '5th' = round(quantile(VALUE, 0.05),0),
+                   '10th' = round(quantile(VALUE, 0.1),0),
                    '25th' = round(quantile(VALUE, 0.25),0),
                    '50th' = round(quantile(VALUE, 0.50),0),
-                   '75th' = round(quantile(VALUE, 0.75),0)
+                   '75th' = round(quantile(VALUE, 0.75),0),
+                   '95th' = round(quantile(VALUE, 0.95),0),
+                   Min = round(min(VALUE),0),
+                   Max = round(max(VALUE),0)
   ) %>% 
   arrange(desc(N)) %>% 
   gt() %>%
   fmt_number(use_seps = TRUE, decimals = 0)
 
-S2_a
+bS7_a
 ```
 
 ```{r}
-S2_b <- ggplot(data = uo_rate, aes(x = VALUE)) +
-  facet_wrap(~SOURCE, scales = "free") +
-  geom_histogram(binwidth = 50) +
+bS7_b <- ggplot(data = uo_rate, aes(x = VALUE)) +
+  facet_wrap(~factor(SOURCE, levels=c('Foley', 'Suprapubic', 'Ileoconduit',
+                         'Void',
+                         'R Nephrostomy', 'L Nephrostomy')), scales = "free") +  geom_histogram(binwidth = 50) +
   xlim(-25, 1100) +
   labs(
-        title = "Volumes",
+        # title = "Volumes",
         x = "Volume (ml)",
         y = "Frequency"
       ) +
@@ -548,7 +732,7 @@ S2_b <- ggplot(data = uo_rate, aes(x = VALUE)) +
         plot.caption = element_text(face = "italic")
       )
 
-S2_b
+bS7_b
 ```
 
 \ 
@@ -570,15 +754,15 @@ count_uo_zero_vs_all <- left_join(uo_rate_count,
   mutate(PROPORTION = n.y / n.x) %>%
   pivot_longer(cols = n.y:n.x, names_to = "type")
   
-S2_c <- count_uo_zero_vs_all %>%
+bS7_c <- count_uo_zero_vs_all %>%
   ggplot(aes(x=reorder(SOURCE, -value), y=value, fill=type)) +
     geom_bar(position="fill", stat="identity") +
     xlab("") +
     ylab("") +
     scale_fill_brewer(palette="Paired") +  
-    geom_text(aes(label=ifelse(type == "n.y", paste((round(PROPORTION, 3) * 100), "%"), "")), 
+    geom_text(aes(label=ifelse(type == "n.y", paste0((round(PROPORTION, 3) * 100), "%"), "")), 
           color="black", 
-          size=3.5, 
+          size=3, 
           vjust=-1,
           position="fill") +
     theme_minimal() +
@@ -587,22 +771,24 @@ S2_c <- count_uo_zero_vs_all %>%
   theme(axis.text.y=element_blank()) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))+
      labs(
-         title = "Proportion of zero value raw output count",
+         # title = "Proportion of zero value raw output count",
        ) +
        theme(
          plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
          plot.subtitle = element_text(size = 10, face = "bold"),
          plot.caption = element_text(face = "italic")
        )
-S2_c
+bS7_c
 ```
 
 ```{r}
 uo_rate_0 <- uo_rate %>% filter(VALUE == 0) 
-S2_d <- uo_rate_0 %>% group_by(SOURCE) %>%
+bS7_d <- uo_rate_0 %>% group_by(SOURCE) %>%
   dplyr::summarise(N = n(),
                    Mean = round(mean(TIME_INTERVAL),0),
                    SD = round(sd(TIME_INTERVAL),0),
+                   '5th' = round(quantile(TIME_INTERVAL, 0.05),0),
+                   '10th' = round(quantile(TIME_INTERVAL, 0.1),0),
                    '25th' = round(quantile(TIME_INTERVAL, 0.25),0),
                    '50th' = round(quantile(TIME_INTERVAL, 0.50),0),
                    '75th' = round(quantile(TIME_INTERVAL, 0.75),0),
@@ -614,7 +800,7 @@ S2_d <- uo_rate_0 %>% group_by(SOURCE) %>%
   gt() %>%
   fmt_number(use_seps = TRUE, decimals = 0)
 
-S2_d
+bS7_d
 ```
 
 ------------------------------------------------------------------------
@@ -624,7 +810,7 @@ S2_d
 ## UO Rate
 
 ```{r}
-S3_a <- uo_rate %>% group_by(SOURCE) %>%
+bS8_a <- uo_rate %>% group_by(SOURCE) %>%
     dplyr::summarise(N = n(),
                    Mean = round(mean(HOURLY_RATE),0),
                    SD = round(sd(HOURLY_RATE),0),
@@ -641,17 +827,18 @@ S3_a <- uo_rate %>% group_by(SOURCE) %>%
   gt() %>%
   fmt_number(use_seps = TRUE, decimals = 0)
 
-S3_a
+bS8_a
 ```
 
 ```{r}
-S3_b <- ggplot(data = uo_rate, aes(x = HOURLY_RATE)) +
+bS8_b <- ggplot(data = uo_rate, aes(x = HOURLY_RATE)) +
   geom_histogram(binwidth = 20) +
-  facet_wrap(~SOURCE, scales = "free") +
-  xlim(-10, 500) +
+  facet_wrap(~factor(SOURCE, levels=c('Foley', 'Suprapubic', 'Ileoconduit',
+                         'Void',
+                         'R Nephrostomy', 'L Nephrostomy')), scales = "free") +  xlim(-10, 500) +
   labs(
-        title = "UO Rates",
-        subtitle = "by source",
+        # title = "UO Rates",
+        # subtitle = "by source",
         x = "Rate (ml/hr)",
         y = "Frequency"
       ) +
@@ -661,7 +848,7 @@ S3_b <- ggplot(data = uo_rate, aes(x = HOURLY_RATE)) +
         plot.caption = element_text(face = "italic")
       )
 
-S3_b
+bS8_b
 ```
 
 \ 
@@ -670,80 +857,137 @@ S3_b
 The association between UO rates and collection periods, smoothed conditional means for records of Foley catheter.
 
 ```{r}
-uo_rate %>%
+bS8_d <- uo_rate %>%
   filter(SOURCE == "Foley",
          HOURLY_RATE < 500) %>%
-  # arrange(STAY_ID) %>%
-  # slice_head(n = 1000000) %>%
-ggplot(aes(x = HOURLY_RATE, y = TIME_INTERVAL)) +
-  geom_smooth(alpha = 0.1, linewidth = 1) + 
-  geom_hline(yintercept=60, size = 0.3, color = "#cccccc") +
-  geom_vline(xintercept=20, size = 0.3, color = "black", linetype = "dashed") +
-  scale_x_continuous(breaks = c(0, 20, 50, 100, 200, 300)) +
+  # slice_head(n = 50000) %>%
+  ggplot(aes(x = HOURLY_RATE, y = TIME_INTERVAL)) +
+  geom_smooth(se = TRUE, alpha = 0.1, linewidth = 1) +
+  # geom_smooth(
+  #   se = FALSE,
+  #   method = "lm",
+  #   linetype = "dashed",
+  #   color = "red", 
+  #   linewidth = 0.3
+  # ) +
+  geom_hline(yintercept = 60,
+             size = 0.3,
+             color = "#cccccc") +
+  geom_vline(
+    xintercept = 20,
+    size = 0.3,
+    color = "black",
+    linetype = "dotdash"
+  ) +
+  scale_x_continuous(breaks = c(0, 20, 50, 100, 200, 300, 400, 500)) +
   scale_y_continuous(breaks = c(0, 60, 100, 200)) +
-  coord_cartesian(xlim = c(-10, 350), ylim = c(0,200)) +
-  labs(x="Urine output rate (ml/hr)", y = "Collection periods (min)") +
+  coord_cartesian(xlim = c(0, 500), ylim = c(0, 200)) +
+  labs(x = "Urine output rate (ml/hr)", y = "Collection periods (min)") +
   theme_classic() + # remove panel background and gridlines
   theme(
-    plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
+    plot.title = element_text(
+      color = "#0099F8",
+      size = 16,
+      face = "bold"
+    ),
     plot.subtitle = element_text(size = 10, face = "bold"),
     plot.caption = element_text(face = "italic")
   )
+
+bS8_d
 ```
 
 Quantile analysis for collection periods as a function of rates.
 
 ```{r, cache=TRUE}
 uo_rate_qreg <- uo_rate %>%
-  filter(SOURCE == "Foley") %>%
-  arrange(STAY_ID) %>%
-  slice_head(n = 30000)
-
-#### OLS
-# lm <- lm(data=uo_rate_qreg, 
-#          formula =  TIME_INTERVAL ~ 
-#            HOURLY_RATE)
-# 
-# ols <- as.data.frame(coef(lm))
-# ols.ci <- as.data.frame(confint(lm, level = 0.95)) 
-# ols2 <- cbind(ols, ols.ci)
-# ols2 <- tibble::rownames_to_column(ols2, var="term")
+  filter(SOURCE == "Foley",
+         HOURLY_RATE < 500) %>%
+  arrange(desc(CHARTTIME)) %>%
+  slice_head(n = 500000)
 
 #### Quantile
-quantile_plot <- rq(TIME_INTERVAL ~ 
-  HOURLY_RATE, seq(0.20, 0.80, by = 0.10), data=uo_rate_qreg) %>%
-  tidy(se.type = "rank", conf.int = TRUE, conf.level = 0.95) %>%
+quantile_reg <- rq(TIME_INTERVAL ~
+                     HOURLY_RATE,
+                   seq(0.10, 0.90, by = 0.10),
+                   # c(.05, .1, .25, .5, .75, .90, .95),
+                   data = uo_rate_qreg)
+
+summary(quantile_reg, se = "iid") %>% 
+  plot()
+```
+
+```{r, eval=TRUE}
+### OLS
+lm <- lm(data=uo_rate_qreg,
+         formula =  TIME_INTERVAL ~
+           HOURLY_RATE)
+
+ols <- as.data.frame(coef(lm))
+ols.ci <- as.data.frame(confint(lm, level = 0.95))
+ols2 <- cbind(ols, ols.ci)
+ols2 <- tibble::rownames_to_column(ols2, var="term")
+
+
+
+#### Quantile
+bS8_e <- quantile_reg %>%
+  tidy(se.type = "iid", conf.int = TRUE, conf.level = 0.95) %>%
   filter(!grepl("factor", term)) %>%
-ggplot(aes(x=tau,y=estimate)) +
-  labs(x="Tau", y = "Estimate") +
-  scale_y_continuous(limits = symmetric_limits) +
-  ##### quantilie results
-  # geom_point(color="#27408b", size = 0.3) + 
-  # geom_ribbon(aes(ymin=conf.low,ymax=conf.high),alpha=0.25, fill="#555555")+
-  geom_line(color="black", linetype = "dotdash", size = 0.3) + 
-  geom_point(size=3, shape=21, fill="white", size = 0.3) + 
-  geom_errorbar(aes(ymin=conf.low, ymax=conf.high), width=.1) +
-  facet_wrap(~term, scales="free", ncol=2,
-             # labeller = labeller(.cols = label_both)
-             labeller = labeller(term =
-                                   c("(Intercept)" = "(Intercept)",
-                                     "HOURLY_RATE" = "UO rate (ml/hr)"))
-             ) +
-  ##### OLS results
-  # geom_hline(data = ols2, aes(yintercept= `coef(lm)`), lty=1, color="red", size=0.3)+
-  # geom_hline(data = ols2, aes(yintercept= `2.5 %`), lty=2, color="red", size=0.3)+
-  # geom_hline(data = ols2, aes(yintercept= `97.5 %`), lty=2, color="red", size=0.3)+
-  #### Lines
-  geom_hline(yintercept = 0, size=0.3) +
-  # labs(title="Quantile Analysis for Collection Periods as a Function of Rates") +
-  theme_classic() + # remove panel background and gridlines
+  ggplot(aes(x=tau,y=estimate)) +
+  theme_classic() +
   theme(
-    plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-    plot.subtitle = element_text(size = 10, face = "bold"),
-    plot.caption = element_text(face = "italic"),
-    strip.background = element_blank()
-  )
-quantile_plot
+    strip.background = element_blank(),
+    #strip.text.x = element_blank()
+  ) +
+  scale_y_continuous(limits = symmetric_limits) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 12)) +
+  ##### quantilie results
+  geom_point(color="#27408b", size = 0.3)+ 
+  geom_line(color="black", linetype = "dotdash", size = 0.3)+ 
+  geom_ribbon(aes(ymin=conf.low,ymax=conf.high),alpha=0.25, fill="#555555")+
+  facet_wrap(~term, scales="free", ncol=1)+
+  ##### OLS results
+  geom_hline(data = ols2, aes(yintercept= `coef(lm)`), lty=1, color="red", size=0.3)+
+  geom_hline(data = ols2, aes(yintercept= `2.5 %`), lty=2, color="red", size=0.3)+
+  geom_hline(data = ols2, aes(yintercept= `97.5 %`), lty=2, color="red", size=0.3)+
+  #### Lines
+   geom_hline(yintercept = 0, size=0.3) 
+
+bS8_e
+```
+
+```{r}
+# Visualization for Quantile Regression with some tau values: 
+intercept_slope <- quantile_reg %>% 
+  coef() %>% 
+  t() %>% 
+  data.frame() %>% 
+  rename(intercept = X.Intercept., slope = HOURLY_RATE) %>% 
+  mutate(quantile = row.names(.))
+
+
+bS8_f <-
+  ggplot() +
+  geom_point(data = uo_rate_qreg, aes(HOURLY_RATE, TIME_INTERVAL),
+    alpha = 0.2,
+    size = 0.5,
+    stroke = 0.5,
+    width = 2,
+    height = 2
+  ) +
+  geom_abline(data = intercept_slope, aes(
+    intercept = intercept,
+    slope = slope,
+    color = quantile
+  ),
+  linewidth=1) +
+  theme_minimal() +
+  labs(x = "Urine output rate (ml/hr)", y = "Collection periods (min)") +
+  coord_cartesian(xlim = c(0, 500), ylim = c(0, 500)) +
+  theme(legend.position="bottom")
+
+bS8_f
 ```
 
 \ 
@@ -757,6 +1001,8 @@ uo_rate %>%
    dplyr::summarise(N = n(),
                    Mean = round(mean(TIME_INTERVAL),0),
                    SD = round(sd(TIME_INTERVAL),0),
+                   '5th' = round(quantile(TIME_INTERVAL, 0.05),0),
+                   '10th' = round(quantile(TIME_INTERVAL, 0.1),0),
                    '25th' = round(quantile(TIME_INTERVAL, 0.25),0),
                    '50th' = round(quantile(TIME_INTERVAL, 0.50),0),
                    '75th' = round(quantile(TIME_INTERVAL, 0.75),0),
@@ -774,8 +1020,9 @@ uo_rate %>%
   filter(HOURLY_RATE <= 20) %>%
 ggplot(aes(x = TIME_INTERVAL / 60)) +
   geom_histogram(binwidth = 1) +
-  facet_wrap(~SOURCE, scales = "free") +
-  xlim(-1, 20) +
+  facet_wrap(~factor(SOURCE, levels=c('Foley', 'Suprapubic', 'Ileoconduit',
+                         'Void',
+                         'R Nephrostomy', 'L Nephrostomy')), scales = "free") +  xlim(-1, 20) +
   labs(
           title = "Collection periods for UO rate 20ml/hr or below",
           subtitle = "by source",
@@ -794,13 +1041,17 @@ ggplot(aes(x = TIME_INTERVAL / 60)) +
 ### Mean Rate
 **Mean UO rate weighted by tyme and grouped by source:**
 ```{r}
-S3_c <- uo_rate_true %>% 
+bS8_c <- uo_rate_true %>% 
   group_by(SOURCE) %>%
   summarise(weighted_mean_rate = weighted.mean(HOURLY_RATE, TIME_INTERVAL)) %>%
   gt() %>%
-  fmt_number(use_seps = TRUE, decimals = 1)
+  fmt_number(use_seps = TRUE, decimals = 1) %>%
+  cols_label(
+    SOURCE = "Source",
+    weighted_mean_rate = "Weighted mean rate (ml/hr)"
+  )
 
-S3_c
+bS8_c
 ```
 
 \ 
@@ -808,10 +1059,13 @@ S3_c
 ## Hourly-adjusted UO
 
 ```{r}
-S4_a <- hourly_uo %>% drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+# 2065999
+bS9_a <- hourly_uo %>% drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
     dplyr::summarise(N = n(),
                    Mean = round(mean(HOURLY_VALID_WEIGHTED_MEAN_RATE),0),
                    SD = round(sd(HOURLY_VALID_WEIGHTED_MEAN_RATE),0),
+                   '5th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.05),0),
+                   '10th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.1),0),
                    '25th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.25),0),
                    '50th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.50),0),
                    '75th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.75),0),
@@ -823,16 +1077,16 @@ S4_a <- hourly_uo %>% drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
   gt() %>%
   fmt_number(use_seps = TRUE, decimals = 0)
 
-S4_a
+bS9_a
 ```
 
 ```{r}
-S4_b <- hourly_uo %>% drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+bS9_b <- hourly_uo %>% drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
 ggplot(aes(x = HOURLY_VALID_WEIGHTED_MEAN_RATE)) +
   geom_histogram(binwidth = 25) +
   xlim(-10, 500) + 
   labs(
-        title = "Hourly-Adjusted UO",
+        # title = "Hourly-Adjusted UO",
         x = "Hourly UO (ml)",
         y = "Frequency"
       ) +
@@ -842,7 +1096,7 @@ ggplot(aes(x = HOURLY_VALID_WEIGHTED_MEAN_RATE)) +
         plot.caption = element_text(face = "italic")
       )
 
-S4_b
+bS9_b
 ```
 
 \ 
@@ -865,7 +1119,7 @@ adj_uo_diff <- hourly_uo %>%
 
 my_order <- c("<10", "<50", "<100", "<150", "<200")
 
-adj_uo_diff %>%
+bS11 <- adj_uo_diff %>%
   select(cutoff_10,
          cutoff_50,
          cutoff_100,
@@ -913,6 +1167,8 @@ adj_uo_diff <- hourly_uo %>%
                   0),
          .keep = "none")
 
+bS11
+
 mean(adj_uo_diff$no_diff)
 ```
 
@@ -921,10 +1177,13 @@ mean(adj_uo_diff$no_diff)
 ### Hourly UO Per Kilogram
 
 ```{r}
-S4_c <- uo_ml_kg_hr %>%
+# 1993167
+bS9_c <- uo_ml_kg_hr %>%
   dplyr::summarise(N = n(),
                    Mean = round(mean(ML_KG_HR),2),
                    SD = round(sd(ML_KG_HR),2),
+                   '5th' = round(quantile(ML_KG_HR, 0.05),2),
+                   '10th' = round(quantile(ML_KG_HR, 0.1),2),
                    '25th' = round(quantile(ML_KG_HR, 0.25),2),
                    '50th' = round(quantile(ML_KG_HR, 0.50),2),
                    '75th' = round(quantile(ML_KG_HR, 0.75),2),
@@ -934,20 +1193,20 @@ S4_c <- uo_ml_kg_hr %>%
   ) %>% gt() %>%
   fmt_number(use_seps = TRUE, decimals = 2)
 
-S4_c
+bS9_c
 ```
 
 ```{r}
 mean_log <- log(mean(uo_ml_kg_hr$ML_KG_HR))
 sd_log <- log(sd(uo_ml_kg_hr$ML_KG_HR))
-S4_d <- ggplot() + 
+bS9_d <- ggplot() + 
   xlim(-1, 10) + 
   geom_histogram(aes(x = ML_KG_HR
                      # , y =..density..
                      ), data=uo_ml_kg_hr, binwidth = 0.05) + 
   # stat_function(fun = dlnorm, args = list(meanlog = mean_log, sdlog = sd_log, log = FALSE), size=1, color='gray') +
   labs(
-        title = "Hourly-Adjusted UO per Kilogram",
+        # title = "Hourly-Adjusted UO per Kilogram",
         x = "Hourly volume to kg (ml/hr/kg)",
         y = "Frequency"
       ) +
@@ -957,26 +1216,54 @@ S4_d <- ggplot() +
         plot.caption = element_text(face = "italic")
       )
 
-S4_d
+bS9_d
+```
 
-save(all_rows_count, 
-     distinct_time_item_patient_rows_count, 
-     S1_a, 
-     S2_a, S2_b, S2_c, S2_d, 
-     S3_a, S3_b, S3_c,
-     S4_a, S4_b, S4_c, S4_d, 
-     file = "s_data.Rda")
+```{r}
+aumc_uo_rate_true <- uo_rate_true
+aumc_hourly_uo <- hourly_uo
+aumc_raw_uo_eligible <- raw_uo_eligible
+
+save(bS3a,
+     bS6_a, bS6_b,
+     bS7_a, bS7_b, bS7_c, bS7_d,
+     bS8_a, bS8_b, bS8_c, bS8_d, bS8_e, bS8_f,
+     bS9_a, bS9_b, bS9_c, bS9_d,
+     bS11,
+     aumc_uo_rate_true,
+     aumc_hourly_uo,
+     aumc_raw_uo_eligible,
+     file = "bs_data.Rda")
 ```
 
 ------------------------------------------------------------------------
 
 # Performance analysis
 
+describing the prevalence of oliguric-AKI upon admission and incidence at the first ICU day
+
 ```{r}
-akis_excluded <- akis %>%
-  filter(NO_START == 0,
-         # AKI_TYPE == 1,
-         STAY_RESOLVED_UO_AKI_PRE == 0)
+aki_epi %>%
+  transmute(
+    prevalnce_admit = first_kdigo_uo,
+    Incidence_first_day = ifelse(first_kdigo_uo == 0, !is.na(max_uo_stage), NA),
+    Incidence_first_day_with_stage = ifelse(first_kdigo_uo == 0 & max_uo_stage > 0, max_uo_stage, NA)
+  ) %>%
+  tbl_summary(
+    missing = "no",
+    label = list(
+      prevalnce_admit ~ "Prevalence of oliguric-AKI at admission",
+      Incidence_first_day ~ "Incidence of newly diagnosed AKI on the first day ",
+      Incidence_first_day_with_stage ~ "Maximum KDIGO staging"
+    )
+  )
+```
+
+```{r}
+akis_excluded <- aki_epi %>%
+  filter(first_kdigo_uo == 0 & max_uo_stage > 0) %>%
+  transmute(AKI_ID = first_aki_id) %>%
+  left_join(akis, by = "AKI_ID")
 
 akis_excluded$PEAK_UO_STAGE <- as.character(akis_excluded$PEAK_UO_STAGE)
 
@@ -1007,9 +1294,57 @@ akis_excluded %>%
   tbl_summary()
 ```
 
+table 1 for those ICU stays, stratified by max kdigo-uo stage:
 ```{r}
-aki_uo_analysis %>% 
-ggplot(aes(TIME, UO_KG, color=PEAK_UO_STAGE, fill=PEAK_UO_STAGE))  + 
+akis_excluded %>%
+  select(STAY_ID, PEAK_UO_STAGE) %>%
+  left_join(table_1, by = "STAY_ID") %>%
+  select(
+    PEAK_UO_STAGE,
+    admission_age,
+    weight_admit,
+    gender,
+    creat_first,
+    # scr_baseline,
+    icu_days,
+    rrt_binary,
+    hospital_expire_flag
+  ) %>%
+  tbl_summary(
+    by = PEAK_UO_STAGE,
+    type = list(
+      c(hospital_expire_flag,
+        rrt_binary) ~ "dichotomous",
+      c(admission_age,
+        weight_admit,
+        creat_first,
+        # scr_baseline
+        ) ~ "continuous"
+    ),
+    statistic = c(admission_age,
+                  weight_admit,
+                  creat_first,
+                  # scr_baseline
+                  ) ~ "{mean} ({sd})",
+    missing = "no",
+    missing_text = "-",
+    label = list(
+      admission_age ~ "Age at Hospital Admission, years",
+      gender ~ "Gender",
+      weight_admit ~ "Weight at ICU Admission, kg",
+      creat_first ~ "First ICU Creatinine, mg/dL",
+      # scr_baseline ~ "Baseline Serum Creatinine, mg/dL",
+      icu_days ~ "Time in ICU, days",
+      rrt_binary ~ "Renal replacement therapy",
+      hospital_expire_flag ~ "Mortality"
+    ) 
+  ) %>%
+  add_p()
+```
+
+```{r}
+aumc_uo_figure <- aki_uo_analysis %>% 
+ ggplot(aes(TIME, UO_KG, color=PEAK_UO_STAGE, fill=PEAK_UO_STAGE))  + 
            # linetype=PEAK_UO_STAGE))  + 
   geom_hline(yintercept=0.3, size = 0.3, color = "#cccccc") +
   geom_hline(yintercept=0.5, size = 0.3, color = "#cccccc") +
@@ -1043,6 +1378,7 @@ ggplot(aes(TIME, UO_KG, color=PEAK_UO_STAGE, fill=PEAK_UO_STAGE))  +
     plot.subtitle = element_text(size = 10, face = "bold"),
     plot.caption = element_text(face = "italic")
   )
+aumc_uo_figure
 ```
 
 \ 
@@ -1051,11 +1387,11 @@ ggplot(aes(TIME, UO_KG, color=PEAK_UO_STAGE, fill=PEAK_UO_STAGE))  +
 ```{r}
 km_fit <- survfit2(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE, data = akis_excluded)
 
-km_fit %>%
+aumc_survival_figure <- km_fit %>%
 ggsurvfit(linewidth = 1) +
   add_confidence_interval() +
   add_quantile() +
-  scale_ggsurvfit(x_scales = list(breaks = c(0:30))) +
+  scale_ggsurvfit(x_scales = list(breaks = seq(0, 30, by = 5))) +
   coord_cartesian(xlim = c(0, 30)) +
   theme_classic() +
   labs(x="Days", y = "Survival", 
@@ -1068,8 +1404,25 @@ ggsurvfit(linewidth = 1) +
                     labels=c("1","2","3")) +
   theme(legend.position = "bottom",
         plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-        plot.subtitle = element_text(size = 10, face = "bold")) +
-  add_pvalue(caption = "Log-rank {p.value}")
+        plot.subtitle = element_text(size = 10, face = "bold"))
+  # + add_pvalue(caption = "Log-rank {p.value}")
+
+aumc_survival_figure
+```
+
+**table of survival probabilities:**
+```{r}
+survfit2(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ 1,
+           data = akis_excluded) %>% tbl_survfit(times = c(7, 30),
+                                                 label = "Maximum KDIGO-UO stage",
+                                                 label_header = "**Day {time}**")
+
+aumc_survival_table <-
+  survfit2(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE,
+           data = akis_excluded) %>% tbl_survfit(times = c(7, 30),
+                                                 label = "Maximum KDIGO-UO stage",
+                                                 label_header = "**Day {time}**")
+aumc_survival_table
 ```
 
 **Log rank for each pair:**
@@ -1093,6 +1446,25 @@ survdiff(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE,
          data = akis_excluded_non_3)
 ```
 
+```{r}
+aumc_aki_epi <- aki_epi
+aumc_akis <- akis
+aumc_t1a <- t1a
+aumc_t1b <- t1b
+aumc_table_1 <- table_1
+aumc_uo_rate <- uo_rate
+
+save(aumc_aki_epi,
+     aumc_akis,
+     aumc_t1a,
+     aumc_t1b,
+     aumc_table_1,
+     aumc_uo_rate,
+     aumc_uo_figure,
+     aumc_survival_figure,
+     aumc_survival_table,
+     file = "paper_aumc.Rda")
+```
 
 ------------------------------------------------------------------------
 
