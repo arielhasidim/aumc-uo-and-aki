@@ -906,15 +906,15 @@ uo_rate_qreg <- uo_rate %>%
   arrange(desc(CHARTTIME)) %>%
   slice_head(n = 500000)
 
-#### Quantile
-quantile_reg <- rq(TIME_INTERVAL ~
-                     HOURLY_RATE,
-                   seq(0.10, 0.90, by = 0.10),
-                   # c(.05, .1, .25, .5, .75, .90, .95),
-                   data = uo_rate_qreg)
-
-summary(quantile_reg, se = "iid") %>% 
-  plot()
+# #### Quantile
+# quantile_reg <- rq(TIME_INTERVAL ~
+#                      HOURLY_RATE,
+#                    seq(0.10, 0.90, by = 0.10),
+#                    # c(.05, .1, .25, .5, .75, .90, .95),
+#                    data = uo_rate_qreg)
+# 
+# summary(quantile_reg, se = "iid") %>% 
+#   plot()
 ```
 
 ```{r, eval=TRUE}
