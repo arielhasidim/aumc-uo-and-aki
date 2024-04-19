@@ -32,9 +32,9 @@ This repository has two main objectives:
 ## Requirements and Compatability
 
  - The AmsterdamUMC database is **required** in order to run this code and is not provided with this repository. 
- - To access the AmsterdamUMCdb, you will need to request access according to the guidance in the [official website](https://amsterdammedicaldatascience.nl/amsterdamumcdb/).
+ - To access the AmsterdamUMCdb, you will need to request access according to the guidance on the [official website](https://amsterdammedicaldatascience.nl/amsterdamumcdb/).
  - See also the [official repository](https://github.com/AmsterdamUMC/AmsterdamUMCdb).
- - The queries and workflow included here depends of Google's Bigquery cloud service. Researchers who want to use the suggested workflow need to download the AmsterdamUMC dataset tables in full and upload them manually to a Bigquery dataset named "original" within their personal project folder. See the worktree in the screenshot bellow for refrence.
+ - The queries and workflow included here depend on Google's Bigquery cloud service. Researchers who want to use the suggested workflow need to download the AmsterdamUMC dataset tables in full and upload them manually to a Bigquery dataset named "original" within their personal project folder. See the workflow in the screenshot below for reference.
  - You will need a Google Cloud Platform (GCS) billing account to run the queries.
  - The SQL queries are written in GoogleSQL dialect (formally known as "Standard-SQL" dialect) and is probably compatible with other common dialects.
  - The code was tested on AmsterdamUMCdb v1.0.2.
@@ -43,7 +43,7 @@ This repository has two main objectives:
 
 ## Example
 
-After creating all the tables and repreducing the associated study, you should end up with a result page in HTML format: https://arielhasidim.github.io/aumc-uo-and-aki.
+After creating all the tables and reproducing the associated study, you should end up with a result page in HTML format: https://arielhasidim.github.io/aumc-uo-and-aki.
 
 ## Citation
 
