@@ -19,7 +19,7 @@ WITH
         GROUP BY
             n.admissionid
     ),
-    first_creat AS (
+    first_last_creat AS (
         SELECT
             n.admissionid,
             ARRAY_AGG(
@@ -28,9 +28,19 @@ WITH
                     n.measuredat ASC
                 LIMIT
                     1
-            ) [OFFSET(0)] * 0.0113 AS creat_first -- convertion from μmol/L to mg/dL: https://academic.oup.com/ndt/article-pdf/19/suppl_2/ii42/5215827/gfh1030.pdf
+            ) [OFFSET(0)] * 0.0113 AS creat_first, -- convertion from μmol/L to mg/dL: https://academic.oup.com/ndt/article-pdf/19/suppl_2/ii42/5215827/gfh1030.pdf
+            ARRAY_AGG(
+                n.value
+                ORDER BY
+                    n.measuredat DESC
+                LIMIT
+                    1
+            ) [OFFSET(0)] * 0.0113 AS creat_last,
+            MAX(IF(n.measuredat <  b.measuredat + ( 72 * 60 * 60 * 1000)   AND n.measuredat >= b.measuredat, n.value, NULL)) * 0.0113 AS creat_peak_72
         FROM
             `original.numericitems` n
+            LEFT JOIN  (SELECT STAY_ID, MIN(measuredat) measuredat FROM `aumc_uo_and_aki.a_urine_output_raw` GROUP BY STAY_ID) 
+                AS b ON b.STAY_ID = n.admissionid
         WHERE
             itemid IN (
                 6836, --Kreatinine µmol/l (erroneously documented as µmol)
@@ -124,11 +134,13 @@ SELECT
     END AS height_first,
     b.baseline_creatinine scr_baseline,
     c.creat_first,
+    c.creat_peak_72,
+    c.creat_last,
     d.rrt_binary
 FROM
     `original.admissions` a
     LEFT JOIN baseline_scr b ON b.admissionid = a.admissionid
-    LEFT JOIN first_creat c ON c.admissionid = a.admissionid
+    LEFT JOIN first_last_creat c ON c.admissionid = a.admissionid
     LEFT JOIN rrt d ON d.admissionid = a.admissionid
 WHERE
     lower(a.location) != "mc"

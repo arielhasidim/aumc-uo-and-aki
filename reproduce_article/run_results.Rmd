@@ -1,7 +1,7 @@
 ---
-title: "Method for computerized standardization of arbitrary urinary output charting for the diagnosis of AKI: A derivation-validation proof of concept study using two multicenter databases"
-author: "Ariel Avraham Hasidim, Matthew Adam Klein, Itamar Ben Shitrit, Karny Ilan, Sharon Einav, Lior Fuchs"
-date: "April 7th, 2024"
+title: "Standardizing urine output data for AKI analysis: A multicenter proof of concept study - repreducing results for AUMCdb"
+author: "Ariel Avraham Hasidim, Matthew Adam Klein, Itamar Ben Shitrit, Sharon Einav, Karny Ilan, Lior Fuchs"
+date: "August 17th, 2024"
 output: 
   html_document:
     code_folding: hide
@@ -21,7 +21,7 @@ params:
 <!-- #    For more information and instruction see the GitHub repository.      # -->
 <!-- #                                                                         # -->
 <!-- # 2. Please use 'Knit with Parameters' to provide your billing account    # -->
-<!-- #    for Google's BigQuery that is credentialed for PhysioNet/MIMIC-IV.   # -->
+<!-- #    for Google's BigQuery.                                               # -->
 <!-- ########################################################################### -->
 
 ```{r setup, include=FALSE}
@@ -34,7 +34,7 @@ if (!require("pacman")) install.packages("pacman")
 pacman::p_load(pacman, DBI, bigrquery, tidyverse, reshape2, finalfit, psych, ggplot2, 
                ggbreak,scales,ggpmisc, ggforce, rlang, quantreg, broom, kableExtra, 
                rmdformats, survival, survminer, nortest, gtsummary,
-               ggsci, ggsurvfit, gt) 
+               ggsci, ggsurvfit, gt, rms) 
 
 # Establish connection with BigQuery and billing acount with the correct access
 con <- dbConnect(
@@ -45,9 +45,25 @@ con <- dbConnect(
 )
 
 dbListTables(con)
+
+add_by_n <- function(data, variable, by, ...) {
+  data |> 
+    select(all_of(c(variable, by))) |> 
+    dplyr::arrange(pick(all_of(c(by, variable)))) |> 
+    dplyr::group_by(.data[[by]]) |> 
+    dplyr::summarise_all(~sum(!is.na(.))) %>%
+    rlang::set_names(c("by", "variable")) %>%
+    mutate(
+      by_col = paste0("add_n_stat_", dplyr::row_number()),
+      variable = style_number(variable)
+    ) %>%
+    select(-by) %>%
+    tidyr::pivot_wider(names_from = by_col, 
+                       values_from = variable)
+}
 ```
 
-```{r Quering BigQuery, cache=TRUE, include=FALSE}
+```{r Quering BigQuery, cache=FALSE, include=FALSE}
 raw_uo <- dbGetQuery(con, "SELECT * FROM `aumc_uo_and_aki.a_urine_output_raw`")
 
 raw_uo_eligible <- dbGetQuery(con, statement = read_file('sql/raw eligible.sql'))
@@ -57,40 +73,66 @@ raw_uo_excluions_duplicates <- dbGetQuery(con, statement = read_file('sql/raw_uo
 uo_rate_including_null_collection_period <- dbGetQuery(con, "SELECT * FROM `aumc_uo_and_aki.b_uo_rate`")
 uo_rate <- uo_rate_including_null_collection_period %>%
   drop_na(TIME_INTERVAL)
-uo_rate_true <- uo_rate %>% filter(VALIDITY == TRUE)
-uo_rate_true_foley <- uo_rate_true %>% filter(SOURCE == "Foley")
 
 hourly_uo <- dbGetQuery(con, "SELECT * FROM `aumc_uo_and_aki.c_hourly_uo`")
 uo_ml_kg_hr <- hourly_uo %>% 
-  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
-  mutate(ML_KG_HR = HOURLY_VALID_WEIGHTED_MEAN_RATE / WEIGHT_ADMIT)
+  drop_na(HOURLY_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
+  mutate(ML_KG_HR = HOURLY_WEIGHTED_MEAN_RATE / WEIGHT_ADMIT)
 
 kdigo_uo_stage <-
   dbGetQuery(con,
-             "SELECT * FROM `aumc_uo_and_aki.d3_kdigo_stages` WHERE aki_stage_uo IS NOT NULL")
+             "SELECT * FROM `aumc_uo_and_aki.d3_kdigo_stages` WHERE aki_stage_uo_cons IS NOT NULL")
 
 table_1 <- dbGetQuery(con, statement = read_file('sql/tbl1.sql'))
 
-tbl1_aki <- dbGetQuery(con, statement = read_file('sql/tbl1 aki.sql'))
+akis_all_wide <- dbGetQuery(con, statement = read_file('sql/akis.sql')) %>%
+  filter(FOLLOWUP_DAYS >= 0) %>%
+  mutate(
+    mortality_7 = if_else(DEATH_FLAG == 1 &
+                            FOLLOWUP_DAYS < 8, 1, 0),
+    mortality_30 = if_else(DEATH_FLAG == 1 &
+                             FOLLOWUP_DAYS < 31, 1, 0),
+    morality_90_days = if_else(FOLLOWUP_DAYS < 91 &
+                                 DEATH_FLAG == 1, 1, 0)
+  )
 
-aki_epi <- dbGetQuery(con, statement = read_file('sql/aki epi.sql'))
-
-akis <- dbGetQuery(con, statement = read_file('sql/akis with mortality.sql'))
-
-# creat_diff <- dbGetQuery(con, statement = read_file('sql/creat diff.sql'))
-
-# icus_with_valid_kdigo_uo <- dbGetQuery(con, statement = read_file('sql/icus with valid kdigo uo.sql'))
+akis_all_long <- akis_all_wide %>%
+  select(!FIRST_POSITIVE_STAGE_UO_CONS_TIME) %>%
+  mutate(
+    max_stage.newcons = MAX_STAGE_NEW_CONS,
+    max_stage.newmean = MAX_STAGE_NEW_MEAN,
+    first_stage.newcons = FIRST_STAGE_NEW_CONS,
+    first_stage.newmean = FIRST_STAGE_NEW_MEAN,
+    compartments.newcons = COMPARTMENT_COUNT,
+    compartments.newmean = COMPARTMENT_COUNT,
+    .keep = "unused"
+  ) %>%
+  pivot_longer(
+    !c(
+      STAY_ID,
+      SUBJECT_ID,
+      FOLLOWUP_DAYS,
+      DEATH_FLAG,
+      mortality_7,
+      mortality_30,
+      morality_90_days
+    ),
+    names_sep = "\\.",
+    names_to = c(".value", "group")
+  ) %>%
+  mutate(
+    prevalnce_admit = if_else(first_stage > 0, 1, 0),
+    Incidence_first_72hr = case_when(first_stage > 0 ~ NA, max_stage == 0 ~ 0, max_stage > 0 ~ 1),
+    Incidence_first_72hr_with_stage = ifelse(first_stage == 0 &
+                                               max_stage > 0, max_stage, NA),
+    .keep = "all"
+  ) 
 ```
 \ 
 
 This is a full reproduction for the results of the validation cohort (AUMCdb).
 
 \ 
-
-**For more details see:**
-
--   Full article at Scientific Data: [doi]()
--   [GitHub repository]()
 
 ### Citation
 
@@ -165,21 +207,16 @@ bS3a <- raw_uo %>%
    geom_text(aes(label=n), vjust=-0.6, color="black", size=3) +
    theme_classic() +
    theme(axis.text.y=element_blank()) +
-   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-       theme(
-         plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-         plot.subtitle = element_text(size = 10, face = "bold"),
-         plot.caption = element_text(face = "italic")
-       )
+   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 bS3a
 ```
 
 \ 
 
-## Duplication Analysis
+## Check for Duplications
 
-### Check for Distinctiveness
+### Distinctiveness
 
 First, we are basing distinctive rows in the raw UO data.
 
@@ -199,7 +236,7 @@ Conclusion: the original raw query does not have duplicates (all rows are distin
 
 \ 
 
-### Check for Simultaneous Charting
+### Simultaneous Charting
 
 ```{r}
 raw_uo_excluions_duplicates$same_value <- as.factor(raw_uo_excluions_duplicates$same_value)
@@ -224,8 +261,6 @@ In conclusion, most of the records have different values, and thus human error i
 \ 
 
 ## Exclusion
-
-Used for *Figure 2. Overview of study's process.*
 
 **ICU type exclusion:**
 
@@ -390,13 +425,13 @@ hourly_uo %>%
 print("Valid hourly-adjusted UO monitoring hours:")
 hourly_uo %>%
   filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
-  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+  drop_na(HOURLY_WEIGHTED_MEAN_RATE) %>%
   nrow()
 
 print("ICU stays with valid hourly-adjusted UO monitoring hours:")
 hourly_uo %>%
   filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
-  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+  drop_na(HOURLY_WEIGHTED_MEAN_RATE) %>%
   {n_distinct(.$STAY_ID)}
 ```
 
@@ -407,7 +442,7 @@ hourly_uo %>%
 ```{r}
 hourly_uo %>%
   filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
-  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+  drop_na(HOURLY_WEIGHTED_MEAN_RATE) %>%
   nrow() / hourly_uo %>%
   filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
   nrow()
@@ -421,13 +456,13 @@ hourly_uo %>%
 print("ICU stays with admission weight and valid hourly-adjusted UO:")
 hourly_uo %>%
   filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
-  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
+  drop_na(HOURLY_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
   {n_distinct(.$STAY_ID)}
 
 print("Valid hourly-adjusted UO monitoring hours with admission weights:")
 hourly_uo %>%
   filter(STAY_ID %in% raw_uo_eligible$STAY_ID) %>%
-  drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
+  drop_na(HOURLY_WEIGHTED_MEAN_RATE, WEIGHT_ADMIT) %>%
   nrow()
 ```
 \
@@ -453,7 +488,7 @@ kdigo_uo_stage %>%
 first_icu_stay <-
   dbGetQuery(
     con,
-    "SELECT patientid, admissionid FIRST_STAY_ID_IN_PATIENT FROM `amsterdamumcdb102.original.admissions`
+    "SELECT patientid, admissionid FIRST_STAY_ID_IN_PATIENT FROM `original.admissions`
 where admissioncount = 1"
   )
 
@@ -475,6 +510,14 @@ kdigo_uo_stage %>%
 **included ICU admissions for AKI analysis**
 ```{r}
 print("number of first ICU stays (after exclusion criteria) with valid KDIGO-UO staging for the first 24-hours ins ICU stay")
+
+aki_epi <- akis_all_long %>%
+  filter(group == "newcons") %>%
+  drop_na(prevalnce_admit) %>%
+  transmute(STAY_ID,
+           first_kdigo_uo = first_stage,
+         max_uo_stage = max_stage)
+  
 kdigo_uo_stage %>% 
   filter(stay_id %in% aki_epi$STAY_ID) %>%
   {n_distinct(.$stay_id)}
@@ -500,6 +543,9 @@ table_1$SERVICE <- as.factor(table_1$SERVICE)
 table_1$admission_age <- as.numeric(table_1$admission_age)
 table_1$weight_admit <- as.numeric(table_1$weight_admit)
 table_1$height_first <- as.numeric(table_1$height_first)
+table_1$creat_peak_72 <- as.numeric(table_1$creat_peak_72)
+table_1$creat_peak_72 <- as.numeric(table_1$creat_peak_72)
+table_1$creat_last <- as.numeric(table_1$creat_last)
 
 uo_for_table1 <- uo_rate_including_null_collection_period %>%
   drop_na(TIME_INTERVAL) %>%
@@ -509,7 +555,6 @@ uo_for_table1 <- uo_rate_including_null_collection_period %>%
     volumes = mean(VALUE, na.rm = TRUE),
     collection_times = mean(TIME_INTERVAL, na.rm = TRUE),
     rates = mean(HOURLY_RATE, na.rm = TRUE),
-    validity = mean(if_else(VALIDITY == TRUE, 1, 0)),
     ml_kg_hr = mean(HOURLY_RATE / WEIGHT_ADMIT, na.rm = TRUE)
   )
 
@@ -519,6 +564,8 @@ t1a <- table_1 %>%
     gender,
     weight_admit,
     creat_first,
+    creat_peak_72,
+    creat_last,
     icu_days,
     rrt_binary,
     hospital_expire_flag
@@ -529,21 +576,27 @@ t1a <- table_1 %>%
         rrt_binary) ~ "dichotomous",
       c(admission_age,
         weight_admit,
-        creat_first) ~ "continuous"
+        creat_peak_72,
+        creat_first,
+        creat_last) ~ "continuous"
     ),
     statistic = c(admission_age,
                   weight_admit,
-                  creat_first) ~ "{mean} ({sd})",
+                  creat_first,
+                  creat_peak_72,
+                  creat_last) ~ "{mean} ({sd})",
     digits = list(icu_days ~ 1),
     missing = "no",
     label = list(
       admission_age ~ "Age at Hospital Admission, years",
       gender ~ "Gender",
-      creat_first ~ "First Creatinine, mg/dL",
+      creat_first ~ "First Creatinine in ICU, mg/dL",
+      creat_peak_72 ~ "Peak Creatinine at first days, mg/dL",
+      creat_last ~ "Hospital Discharge Creatinine, mg/dL",
       weight_admit ~ "Weight at ICU Admission, kg",
       icu_days ~ "Time in ICU, days",
       rrt_binary ~ "Renal replacement therapy",
-      hospital_expire_flag ~ "Mortality"
+      hospital_expire_flag ~ "Hospital Mortality"
     )
   ) %>%
   add_n() 
@@ -554,7 +607,6 @@ display_prec <- function(x)
 t1b <- uo_for_table1 %>%
   select(count,
          volumes,
-         validity,
          collection_times,
          rates,
          ml_kg_hr) %>%
@@ -563,62 +615,28 @@ t1b <- uo_for_table1 %>%
       c(volumes,
         collection_times,
         rates,
-        ml_kg_hr,
-        validity) ~ "continuous"
+        ml_kg_hr) ~ "continuous"
     ),
     statistic = list(
       c(volumes,
         collection_times,
         rates,
-        ml_kg_hr) ~ "{mean} ({sd})",
-      validity ~ "{display_prec}%"
+        ml_kg_hr) ~ "{mean} ({sd})"
     ),
-    digits = list(validity ~ 0),
     missing = "no",
     label = list(
       count ~ "Number of Measurements",
       volumes ~ "Average Volumes, mL",
       collection_times ~ "Average Collection Times, minutes",
-      validity ~ "Proportion of Valid Records, mean",
       rates ~ "Average Rates, mL/hr",
       ml_kg_hr ~ "Average Rate to Weight, mL/hr/kg"
     )
   ) %>%
   add_n() 
 
-t1c <- tbl1_aki %>%
-  select(aki_binary,
-         aki_count,
-         max_stage,
-         aki_portion,
-         aki_mean_duration,
-         aki_total_time
-         ) %>%
-  tbl_summary(
-    type = list(c(aki_mean_duration,
-                  aki_total_time) ~ "continuous"),
-    statistic =
-      list(
-        c(aki_mean_duration,
-          aki_total_time) ~ "{mean} ({sd})",
-        aki_portion ~ "{display_prec}%"
-      ),
-    digits = list(aki_portion ~ 0),
-    label = list(
-      aki_binary ~ "ICU stays with AKI",
-      aki_count ~ "Number of AKIs in ICU Stay",
-      max_stage ~ "Maximal KDIGO-UO Stage",
-      aki_mean_duration ~ "Average AKI Duration, hours",
-      aki_total_time ~ "Total Time in AKI, days",
-      aki_portion ~ "Proportion of time in AKI, mean"
-    ),
-    missing = "no"
-  ) %>%
-  add_n() 
-
 tbl_stack(
-  list(t1a, t1b, t1c),
-  group_header = c("ICU Stay", "UO Charting Across ICU Stay", "AKI across ICU Stay")
+  list(t1a, t1b),
+  group_header = c("ICU Stay", "UO Charting Across ICU Stay")
 ) %>%
   as_gt() %>%
   tab_source_note(source_note = "The variables age at hospital admission, gender, CCI, CKD, ethnicity, time in hospital, and mortality are measured for each hospital admission and might be counted for more than one ICU stay. All other variables are measured individually for each ICU stay. The variables average collection times, average rates, and average rate to weight are only presented for ICU stays with at least two UO measurements for the same compartment, and the latter also required weight at admission. AKI variables were presented for ICU stays with at least one hour with a non-null KDIGO-UO stage. The variables average AKI duration and total time in AKI were specifically reported for ICU stays with at least one AKI event.") %>%
@@ -631,11 +649,10 @@ tbl_stack(
 
 ```{r}
 uo_rate$SOURCE <- as.factor(uo_rate$SOURCE)
-uo_rate$VALIDITY <- as.factor(uo_rate$VALIDITY)
 uo_rate$SERVICE <- as.factor(uo_rate$SERVICE)
 
 uo_rate %>%
-  select(VALUE, TIME_INTERVAL, SOURCE, VALIDITY, SERVICE) %>%
+  select(VALUE, TIME_INTERVAL, SOURCE, SERVICE) %>%
   tbl_summary(by=SERVICE) %>%
   add_overall()
 ```
@@ -668,7 +685,6 @@ bS6_a <- uo_rate %>% group_by(SOURCE) %>%
 bS6_a
 ```
 
-Collection Periods:
 
 ```{r}
 bS6_b <- ggplot(data = uo_rate, aes(x = TIME_INTERVAL / 60)) +
@@ -680,11 +696,6 @@ bS6_b <- ggplot(data = uo_rate, aes(x = TIME_INTERVAL / 60)) +
   labs(
           x = "Time interval (hr)",
           y = "Frequency"
-        ) +
-        theme(
-          plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-          plot.subtitle = element_text(size = 10, face = "bold"),
-          plot.caption = element_text(face = "italic")
         )
 
 bS6_b
@@ -772,11 +783,6 @@ bS7_c <- count_uo_zero_vs_all %>%
   theme(axis.text.x = element_text(angle = 45, hjust = 1))+
      labs(
          # title = "Proportion of zero value raw output count",
-       ) +
-       theme(
-         plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-         plot.subtitle = element_text(size = 10, face = "bold"),
-         plot.caption = element_text(face = "italic")
        )
 bS7_c
 ```
@@ -883,16 +889,7 @@ bS8_d <- uo_rate %>%
   scale_y_continuous(breaks = c(0, 60, 100, 200)) +
   coord_cartesian(xlim = c(0, 500), ylim = c(0, 200)) +
   labs(x = "Urine output rate (ml/hr)", y = "Collection periods (min)") +
-  theme_classic() + # remove panel background and gridlines
-  theme(
-    plot.title = element_text(
-      color = "#0099F8",
-      size = 16,
-      face = "bold"
-    ),
-    plot.subtitle = element_text(size = 10, face = "bold"),
-    plot.caption = element_text(face = "italic")
-  )
+  theme_classic()
 
 bS8_d
 ```
@@ -1041,7 +1038,7 @@ ggplot(aes(x = TIME_INTERVAL / 60)) +
 ### Mean Rate
 **Mean UO rate weighted by tyme and grouped by source:**
 ```{r}
-bS8_c <- uo_rate_true %>% 
+bS8_c <- uo_rate %>% 
   group_by(SOURCE) %>%
   summarise(weighted_mean_rate = weighted.mean(HOURLY_RATE, TIME_INTERVAL)) %>%
   gt() %>%
@@ -1060,18 +1057,18 @@ bS8_c
 
 ```{r}
 # 2065999
-bS9_a <- hourly_uo %>% drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
+bS9_a <- hourly_uo %>% drop_na(HOURLY_WEIGHTED_MEAN_RATE) %>%
     dplyr::summarise(N = n(),
-                   Mean = round(mean(HOURLY_VALID_WEIGHTED_MEAN_RATE),0),
-                   SD = round(sd(HOURLY_VALID_WEIGHTED_MEAN_RATE),0),
-                   '5th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.05),0),
-                   '10th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.1),0),
-                   '25th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.25),0),
-                   '50th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.50),0),
-                   '75th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.75),0),
-                   '95th' = round(quantile(HOURLY_VALID_WEIGHTED_MEAN_RATE, 0.95),0),
-                   Min = round(min(HOURLY_VALID_WEIGHTED_MEAN_RATE),0),
-                   Max = round(max(HOURLY_VALID_WEIGHTED_MEAN_RATE),0)
+                   Mean = round(mean(HOURLY_WEIGHTED_MEAN_RATE),0),
+                   SD = round(sd(HOURLY_WEIGHTED_MEAN_RATE),0),
+                   '5th' = round(quantile(HOURLY_WEIGHTED_MEAN_RATE, 0.05),0),
+                   '10th' = round(quantile(HOURLY_WEIGHTED_MEAN_RATE, 0.1),0),
+                   '25th' = round(quantile(HOURLY_WEIGHTED_MEAN_RATE, 0.25),0),
+                   '50th' = round(quantile(HOURLY_WEIGHTED_MEAN_RATE, 0.50),0),
+                   '75th' = round(quantile(HOURLY_WEIGHTED_MEAN_RATE, 0.75),0),
+                   '95th' = round(quantile(HOURLY_WEIGHTED_MEAN_RATE, 0.95),0),
+                   Min = round(min(HOURLY_WEIGHTED_MEAN_RATE),0),
+                   Max = round(max(HOURLY_WEIGHTED_MEAN_RATE),0)
   ) %>% 
   arrange(desc(N)) %>% 
   gt() %>%
@@ -1081,19 +1078,14 @@ bS9_a
 ```
 
 ```{r}
-bS9_b <- hourly_uo %>% drop_na(HOURLY_VALID_WEIGHTED_MEAN_RATE) %>%
-ggplot(aes(x = HOURLY_VALID_WEIGHTED_MEAN_RATE)) +
+bS9_b <- hourly_uo %>% drop_na(HOURLY_WEIGHTED_MEAN_RATE) %>%
+ggplot(aes(x = HOURLY_WEIGHTED_MEAN_RATE)) +
   geom_histogram(binwidth = 25) +
   xlim(-10, 500) + 
   labs(
         # title = "Hourly-Adjusted UO",
         x = "Hourly UO (ml)",
         y = "Frequency"
-      ) +
-      theme(
-        plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-        plot.subtitle = element_text(size = 10, face = "bold"),
-        plot.caption = element_text(face = "italic")
       )
 
 bS9_b
@@ -1106,9 +1098,9 @@ bS9_b
 
 ```{r}
 adj_uo_diff <- hourly_uo %>%
-  select(HOURLY_VALID_WEIGHTED_MEAN_RATE, SIMPLE_SUM) %>%
-  filter(!is.na(HOURLY_VALID_WEIGHTED_MEAN_RATE)) %>%
-  mutate(hourly_diff = abs(HOURLY_VALID_WEIGHTED_MEAN_RATE - SIMPLE_SUM)) %>%
+  select(HOURLY_WEIGHTED_MEAN_RATE, SIMPLE_SUM) %>%
+  filter(!is.na(HOURLY_WEIGHTED_MEAN_RATE)) %>%
+  mutate(hourly_diff = abs(HOURLY_WEIGHTED_MEAN_RATE - SIMPLE_SUM)) %>%
   mutate(
     cutoff_10 = if_else(hourly_diff < 10, 1, 0),
     cutoff_50 = if_else(hourly_diff < 50, 1, 0),
@@ -1155,14 +1147,14 @@ bS11 <- adj_uo_diff %>%
   tab_source_note(source_note = "The table demonstrates the significance of hourly adjustment for accuracy by presenting the variance between the adjusted values and the simple hourly summation. Cut-off values are based on the absolute difference between the hourly-adjusted UO and a simple hourly summation of UO. Measurements charted on the hour were included with the previous time interval. ")
 
 adj_uo_diff <- hourly_uo %>%
-  select(HOURLY_VALID_WEIGHTED_MEAN_RATE, SIMPLE_SUM) %>%
-  filter(!is.na(HOURLY_VALID_WEIGHTED_MEAN_RATE)) %>%
+  select(HOURLY_WEIGHTED_MEAN_RATE, SIMPLE_SUM) %>%
+  filter(!is.na(HOURLY_WEIGHTED_MEAN_RATE)) %>%
   mutate(no_diff = 
-           ifelse((is.na(HOURLY_VALID_WEIGHTED_MEAN_RATE) &
+           ifelse((is.na(HOURLY_WEIGHTED_MEAN_RATE) &
                   is.na(SIMPLE_SUM)) |
-             (!is.na(HOURLY_VALID_WEIGHTED_MEAN_RATE) &
+             (!is.na(HOURLY_WEIGHTED_MEAN_RATE) &
                   !is.na(SIMPLE_SUM) &
-                    abs(HOURLY_VALID_WEIGHTED_MEAN_RATE-SIMPLE_SUM) < 100), 
+                    abs(HOURLY_WEIGHTED_MEAN_RATE-SIMPLE_SUM) < 100), 
                   1, 
                   0),
          .keep = "none")
@@ -1200,152 +1192,588 @@ bS9_c
 mean_log <- log(mean(uo_ml_kg_hr$ML_KG_HR))
 sd_log <- log(sd(uo_ml_kg_hr$ML_KG_HR))
 bS9_d <- ggplot() + 
-  xlim(-1, 10) + 
+  xlim(0, 2) + 
   geom_histogram(aes(x = ML_KG_HR
                      # , y =..density..
-                     ), data=uo_ml_kg_hr, binwidth = 0.05) + 
+                     ), data=uo_ml_kg_hr, binwidth = 0.02) + 
   # stat_function(fun = dlnorm, args = list(meanlog = mean_log, sdlog = sd_log, log = FALSE), size=1, color='gray') +
   labs(
         # title = "Hourly-Adjusted UO per Kilogram",
         x = "Hourly volume to kg (ml/hr/kg)",
         y = "Frequency"
-      ) +
-      theme(
-        plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-        plot.subtitle = element_text(size = 10, face = "bold"),
-        plot.caption = element_text(face = "italic")
       )
 
 bS9_d
 ```
 
-```{r}
-aumc_uo_rate_true <- uo_rate_true
-aumc_hourly_uo <- hourly_uo
-aumc_raw_uo_eligible <- raw_uo_eligible
-
-save(bS3a,
-     bS6_a, bS6_b,
-     bS7_a, bS7_b, bS7_c, bS7_d,
-     bS8_a, bS8_b, bS8_c, bS8_d, bS8_e, bS8_f,
-     bS9_a, bS9_b, bS9_c, bS9_d,
-     bS11,
-     aumc_uo_rate_true,
-     aumc_hourly_uo,
-     aumc_raw_uo_eligible,
-     file = "bs_data.Rda")
-```
-
-------------------------------------------------------------------------
-
-# Performance analysis
-
-describing the prevalence of oliguric-AKI upon admission and incidence at the first ICU day
+# KDIGO Criteria Avarage-UO, Consecutive-UO and Old (MIMIC repo official deriviation) Compariton
 
 ```{r}
-aki_epi %>%
+aumc_kdigo_inter_aki_table <- akis_all_long %>%
+  filter(group != "old") %>%
+  drop_na(prevalnce_admit) %>%
   transmute(
-    prevalnce_admit = first_kdigo_uo,
-    Incidence_first_day = ifelse(first_kdigo_uo == 0, !is.na(max_uo_stage), NA),
-    Incidence_first_day_with_stage = ifelse(first_kdigo_uo == 0 & max_uo_stage > 0, max_uo_stage, NA)
+    group = case_when(
+      group == "newcons" ~ 'UO-Consecutive',
+      group == "newmean" ~ 'UO-Average',
+      group == "old" ~ 'Block summation'
+    ),
+    aki_binary = if_else(max_stage > 0, 1, 0),
+    max_stage = if_else(max_stage == 0, NA, max_stage),
+    prevalnce_admit
   ) %>%
   tbl_summary(
+    by = "group",
     missing = "no",
+    digits = everything() ~ c(0, 1),
     label = list(
-      prevalnce_admit ~ "Prevalence of oliguric-AKI at admission",
-      Incidence_first_day ~ "Incidence of newly diagnosed AKI on the first day ",
-      Incidence_first_day_with_stage ~ "Maximum KDIGO staging"
+      aki_binary ~ "Oliguric-AKI on the first days",
+      prevalnce_admit ~ "Prevalence at admission",
+      max_stage ~ "Maximum KDIGO staging"
     )
-  )
+  )  %>%
+  modify_column_indent(columns = label, rows = c(FALSE, TRUE)) %>%
+  modify_column_indent(
+    columns = label,
+    rows = c(FALSE, FALSE, TRUE, TRUE, TRUE),
+    double_indent = TRUE
+  ) %>%
+  add_p()
+
+aumc_kdigo_inter_aki_table
 ```
 
-```{r}
-akis_excluded <- aki_epi %>%
-  filter(first_kdigo_uo == 0 & max_uo_stage > 0) %>%
-  transmute(AKI_ID = first_aki_id) %>%
-  left_join(akis, by = "AKI_ID")
-
-akis_excluded$PEAK_UO_STAGE <- as.character(akis_excluded$PEAK_UO_STAGE)
-
-aki_uo_analysis <- left_join(akis_excluded, uo_ml_kg_hr, by = "STAY_ID") %>%
-  drop_na(AKI_START, 
-          TIME_INTERVAL_FINISH, 
-          PEAK_UO_STAGE) %>%
-  select(AKI_ID,
-         STAY_ID,
-         PEAK_UO_STAGE,
-         AKI_START,
-         TIME_INTERVAL_FINISH,
-         UO_KG = ML_KG_HR
-         ) %>%
-  mutate(TIME = as.double(difftime(TIME_INTERVAL_FINISH, 
-                                   AKI_START, 
-                                   units = c("hour")))) %>%
-  filter(TIME >= -48 & TIME <= 48)
-```
-
-## First Oliguric-AKI Events
-Number of identified first oliguric-AKI events in hospitalization stratified by maximum stage:
 
 ```{r}
-akis_excluded %>%
-  select(PEAK_UO_STAGE) %>%
-  mutate(PEAK_UO_STAGE = as.factor(PEAK_UO_STAGE)) %>%
-  tbl_summary()
-```
-
-table 1 for those ICU stays, stratified by max kdigo-uo stage:
-```{r}
-akis_excluded %>%
-  select(STAY_ID, PEAK_UO_STAGE) %>%
+aumc_kdigo_inter_cons_mean <- akis_all_long %>%
+  transmute(STAY_ID,
+            group,
+            first_stage,
+            max_stage,
+            aki_above_2 = max_stage > 1) %>%
+  filter(aki_above_2 == TRUE,
+         (group != "old")) %>%
+  mutate(group = case_when(
+    group == "newcons" ~ 'UO-Consecutive',
+    group == "newmean" ~ 'UO-Average',
+    group == "old" ~ 'Block summation'
+  )) %>%
   left_join(table_1, by = "STAY_ID") %>%
   select(
-    PEAK_UO_STAGE,
+    group,
     admission_age,
     weight_admit,
     gender,
     creat_first,
-    # scr_baseline,
+    creat_last,
+  # scr_baseline,
     icu_days,
     rrt_binary,
     hospital_expire_flag
   ) %>%
   tbl_summary(
-    by = PEAK_UO_STAGE,
+    by = group,
+    type = list(
+      c(rrt_binary) ~ "dichotomous",
+      c(admission_age,
+        weight_admit,
+        creat_first,
+        creat_last) ~ "continuous"
+    ),
+    statistic = c(admission_age,
+                  weight_admit,
+                  creat_first,
+                  creat_last) ~ "{mean} ({sd})",
+    missing = "no",
+    label = list(
+      admission_age ~ "Age at Hospital Admission, years",
+      gender ~ "Gender",
+      weight_admit ~ "Weight at ICU Admission, kg",
+      creat_first ~ "First Creatinine, mg/dL",
+      creat_last ~ "Hospital Discharge Creatinine, mg/dL",
+      icu_days ~ "Time in ICU, days",
+      rrt_binary ~ "Renal replacement therapy",
+      hospital_expire_flag ~ "Hospital Mortality"
+    )
+  ) %>%
+  add_p() %>%
+  add_stat(
+    fns = everything() ~ add_by_n
+  ) %>%
+  modify_header(starts_with("add_n_stat") ~ "**N**") %>%
+  modify_table_body(
+    ~ .x %>%
+      dplyr::relocate(add_n_stat_1, .before = stat_1) %>%
+      dplyr::relocate(add_n_stat_2, .before = stat_2)
+  )
+
+aumc_kdigo_inter_cons_mean
+```
+
+```{r}
+akis_all_long %>%
+  group_by(group, max_stage) %>%
+  summarise(Propo = sum(mortality_7, na.rm = T) / n()) %>%
+  ggplot(aes(max_stage, Propo, fill = group)) + geom_col(position = 'dodge')
+
+
+aumc_cdplod_mean <- cdplot(as.factor(mortality_7)~max_stage, (akis_all_long %>% 
+                                        filter(group == "newmean")),
+       col=c("lightgoldenrod", "lightcyan"), 
+       ylab = "7 days mortality", xlab ="Max KDIGO-UO stage", main = "CD Plot for UOmean")
+aumc_cdplod_mean
+
+aumc_cdplod_cons <- cdplot(as.factor(mortality_7)~max_stage, (akis_all_long %>% 
+                                        filter(group == "newcons")),
+       col=c("lightgoldenrod", "lightcyan"), 
+       ylab = "7 days mortality", xlab ="Max KDIGO-UO stage", main = "CD Plot for UOcons")
+aumc_cdplod_cons
+
+
+model_mean <- glm(
+  mortality_7 ~ MAX_STAGE_NEW_MEAN + FIRST_STAGE_NEW_MEAN,
+  data = akis_all_wide,
+  family = binomial
+)
+
+model_cons <- glm(
+  mortality_7 ~ MAX_STAGE_NEW_CONS + FIRST_STAGE_NEW_CONS,
+  data = akis_all_wide,
+  family = binomial
+)
+
+# anova(model_old, model_new, test = 'Chisq')
+aumc_kdigo_inter_bic <- BIC(model_mean, model_cons)
+
+aumc_kdigo_inter_bic <- cbind(Model = rownames(aumc_kdigo_inter_bic), aumc_kdigo_inter_bic) %>%
+  gt()
+
+aumc_kdigo_inter_bic
+```
+
+```{r}
+# descriptive
+descriptive_tbl <- akis_all_long %>%
+  group_by(group, max_stage) %>%
+  summarise(
+    n = n(),
+    dead = sum(DEATH_FLAG),
+    mortality_prop = sum(DEATH_FLAG) / n()
+  ) %>%
+  # drop_na() %>%
+  group_by(group) %>%
+  transmute(
+    max_stage,
+    "Patients, No. (%)" = paste0(n, " (", round((n / sum(
+      n
+    )), 2), ")"),
+    "Mortality, No. (%)" = paste0(dead, " (", round(mortality_prop, 2), ")")
+  ) %>%
+  gt()
+
+# glm
+m1 <- glm(
+  DEATH_FLAG ~ stage_newcons,
+  family = binomial,
+  data = (
+    akis_all_long %>%
+      filter(group == "newcons") %>%
+      mutate(stage_newcons = as.factor(max_stage))
+  )
+)
+
+m2 <- glm(
+  DEATH_FLAG ~ stage_newmean,
+  family = binomial,
+  data = (
+    akis_all_long %>%
+      filter(group == "newmean") %>%
+      mutate(stage_newmean = as.factor(max_stage))
+  )
+)
+
+glm_tbl <- tbl_stack(list(
+  tbl_regression(m1, exponentiate = TRUE),
+  tbl_regression(m2, exponentiate = TRUE)
+)) %>%
+  as_gt()
+
+# join tables
+glm_tbl_data <- glm_tbl$`_data` %>%
+  filter(!is.na(term)) %>%
+  transmute(
+    group = case_when(
+      variable == "stage_newmean" ~ "newmean",
+      variable == "stage_newcons" ~ "newcons"
+    ),
+    max_stage = label,
+    "OR (95% CI)" = if_else(label == "0", "1 [Reference]", paste0(round(estimate, 2), " (", ci, ")"), ),
+    "P value" = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.001 ~ "<.001",
+      .default = as.character(round(p.value, 2))
+    )
+  )
+
+descriptive_tbl_data <- descriptive_tbl$`_data` %>%
+  mutate(max_stage = as.character(max_stage))
+
+rr_table_data <- left_join(descriptive_tbl_data, glm_tbl_data, by = c("group", "max_stage"))
+
+aumc_kdigo_inter_survival_table <- rr_table_data %>%
+  mutate(
+    group = case_when(
+      group == "newcons" ~ 'UO-Consecutive',
+      group == "newmean" ~ 'UO-Average'
+    )
+  ) %>%
+  gt(
+    rowname_col = "max_stage",
+    groupname_col = "group",
+    row_group_as_column = TRUE
+  ) %>%
+  tab_stubhead(label = "Criteria / Stage") %>%
+  tab_spanner(label = "Univariate analysis", columns = c("OR (95% CI)", "P value")) %>%
+  tab_source_note(source_note = md("For all urine sources")) %>%
+  tab_source_note(source_note = md("KDIGO stage was calculated diffrently"))
+
+aumc_kdigo_inter_survival_table
+```
+
+
+```{r}
+km_fit_newcons <-
+  survfit(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS,
+          akis_all_wide)
+
+km_fit_newmean <-
+  survfit(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_MEAN,
+          akis_all_wide)
+
+
+mimic_survival_figure_newcons <- km_fit_newcons %>%
+ggsurvfit(linewidth = 1) +
+  add_confidence_interval() +
+  add_quantile() +
+  scale_ggsurvfit(x_scales = list(breaks = seq(0, 90, by = 5))) +
+  coord_cartesian(xlim = c(0, 90)) +
+  theme_classic() +
+  scale_fill_discrete(labels=c('0', '1', '2', '3')) +
+  scale_color_discrete(labels=c('0', '1', '2', '3')) +
+  labs(x="Days", y = "Survival", title = "UOcons",
+       color='Maximum KDIGO-UO stage', fill='Maximum KDIGO-UO stage') +
+  theme(legend.position = "bottom")
+
+mimic_survival_figure_newmean <- km_fit_newmean %>%
+ggsurvfit(linewidth = 1) +
+  add_confidence_interval() +
+  add_quantile() +
+  scale_fill_discrete(labels=c('0', '1', '2', '3')) +
+  scale_color_discrete(labels=c('0', '1', '2', '3')) +
+  scale_ggsurvfit(x_scales = list(breaks = seq(0, 90, by = 5))) +
+  coord_cartesian(xlim = c(0, 90)) +
+  theme_classic() +
+  labs(x="Days", y = "Survival",title = "UOmean",
+       color='Maximum KDIGO-UO stage', fill='Maximum KDIGO-UO stage') +
+  theme(legend.position = "bottom")
+
+aumc_kdigo_inter_survival_figure <- ggarrange(
+  mimic_survival_figure_newmean,
+  mimic_survival_figure_newcons,
+  ncol = 1,
+  nrow = 2,
+  legend = "bottom",
+  common.legend = TRUE
+) %>% annotate_figure(top = text_grob("AUMCdb", face = "bold", size = 14))
+
+aumc_kdigo_inter_survival_figure
+```
+
+# Sensitivity Analysis: Validity Threshold for Durations of Collection
+
+```{r create data for threshold analysis, include=FALSE}
+dbSendQuery(con, statement = read_file('sql/validate cutoff/b_uo_rate_temp.sql'))
+
+dbSendQuery(con, statement = read_file('sql/validate cutoff/c_hourly_uo_9520_temp.sql'))
+dbSendQuery(con, statement = read_file('sql/validate cutoff/d1_kdigo_uo_9520_temp.sql'))
+dbSendQuery(con, statement = read_file('sql/validate cutoff/d3_kdigo_stages_9520_temp.sql'))
+
+dbSendQuery(con, statement = read_file('sql/validate cutoff/c_hourly_uo_9920_temp.sql'))
+dbSendQuery(con, statement = read_file('sql/validate cutoff/d1_kdigo_uo_9920_temp.sql'))
+dbSendQuery(con, statement = read_file('sql/validate cutoff/d3_kdigo_stages_9920_temp.sql'))
+
+validity_threshold_wide <- dbGetQuery(con, statement = read_file('sql/validity trashold.sql'))
+
+dbSendQuery(con, "DROP TABLE IF EXISTS`aumc_uo_and_aki.b_uo_rate_temp`")
+
+dbSendQuery(con, "DROP TABLE IF EXISTS`aumc_uo_and_aki.c_hourly_uo_9520_temp`")
+dbSendQuery(con, "DROP TABLE IF EXISTS `aumc_uo_and_aki.d1_kdigo_uo_9520_temp`")
+dbSendQuery(con, "DROP TABLE IF EXISTS`aumc_uo_and_aki.d3_kdigo_stages_9520_temp`")
+
+dbSendQuery(con, "DROP TABLE IF EXISTS`aumc_uo_and_aki.c_hourly_uo_9920_temp`")
+dbSendQuery(con, "DROP TABLE IF EXISTS `aumc_uo_and_aki.d1_kdigo_uo_9920_temp`")
+dbSendQuery(con, "DROP TABLE IF EXISTS`aumc_uo_and_aki.d3_kdigo_stages_9920_temp`")
+```
+
+
+```{r}
+validity_threshold_long <- validity_threshold_wide %>%
+  mutate(
+         first_stage.cons = FIRST_STAGE_NEW_CONS,
+         first_stage.9520 = FIRST_STAGE_NEW_CONS_95_20,
+         first_stage.9920 = FIRST_STAGE_NEW_CONS_99_20,
+         max_stage.cons = MAX_STAGE_NEW_CONS,
+         max_stage.9520 = MAX_STAGE_NEW_CONS_95_20,
+         max_stage.9920 = MAX_STAGE_NEW_CONS_99_20,
+         .keep = "unused") %>%
+  pivot_longer(
+    !c(STAY_ID, FOLLOWUP_DAYS, DEATH_FLAG),
+    names_sep = "\\.",
+    names_to = c(".value", "group")
+  ) %>%
+  mutate(
+    morality_90_days = if_else(FOLLOWUP_DAYS < 91 &
+                                 DEATH_FLAG == 1, 1, 0),
+    prevalnce_admit = if_else(first_stage > 0, 1, 0),
+    Incidence_first_72hr = case_when(first_stage > 0 ~ NA, max_stage == 0 ~ 0, max_stage > 0 ~ 1),
+    Incidence_first_72hr_with_stage = ifelse(first_stage == 0 &
+                                              max_stage > 0, max_stage, NA),
+    .keep = "all"
+  ) 
+
+validity_threshold_long %>%
+  drop_na(prevalnce_admit) %>%
+  transmute(
+    group,
+    aki_binary = if_else(max_stage > 0, 1, 0),
+    max_stage = if_else(max_stage == 0, NA, max_stage),
+    prevalnce_admit
+  ) %>%
+  mutate(group =
+           case_when(group == "cons" ~ "No exclusion",
+                     group == "9520" ~ "95th precentile for rate bellow 20th precentile",
+                     group == "9920" ~ "99th precentile for rate bellow 20th precentile")) %>%
+  tbl_summary(
+    by = "group",
+    missing = "no",
+    digits = everything() ~ c(0, 1),
+    label = list(
+      aki_binary ~ "Oliguric-AKI on the first days",
+      prevalnce_admit ~ "Prevalence at admission",
+      max_stage ~ "Maximum KDIGO staging"
+    )
+  )  %>%
+  modify_column_indent(columns = label, rows = c(FALSE, TRUE)) %>%
+  modify_column_indent(
+    columns = label,
+    rows = c(FALSE, FALSE, TRUE, TRUE, TRUE),
+    double_indent = TRUE
+  ) %>%
+  add_p()
+```
+
+```{r}
+aumc_exclusion_threshold <- validity_threshold_long %>%
+  transmute(STAY_ID,
+            group,
+            first_stage,
+            max_stage,
+            aki_above_2 = max_stage > 1) %>%
+  filter(aki_above_2 == TRUE,
+         (group == "cons" | group == "9520" | group == "9920")) %>%
+  left_join(table_1, by = "STAY_ID") %>%
+      mutate(group =
+           case_when(group == "cons" ~ "No exclusion",
+                     group == "9520" ~ "95th precentile for rate bellow 20th precentile",
+                     group == "9920" ~ "99th precentile for rate bellow 20th precentile")) %>%
+  select(
+    group,
+    admission_age,
+    weight_admit,
+    gender,
+    creat_first,
+    creat_last,
+  # scr_baseline,
+    icu_days,
+    rrt_binary,
+    hospital_expire_flag
+  ) %>%
+  tbl_summary(
+    by = group,
     type = list(
       c(hospital_expire_flag,
         rrt_binary) ~ "dichotomous",
       c(admission_age,
         weight_admit,
         creat_first,
-        # scr_baseline
-        ) ~ "continuous"
+        creat_last) ~ "continuous"
     ),
     statistic = c(admission_age,
                   weight_admit,
                   creat_first,
-                  # scr_baseline
-                  ) ~ "{mean} ({sd})",
+                  creat_last) ~ "{mean} ({sd})",
+    missing = "no",
+    label = list(
+      admission_age ~ "Age at Hospital Admission, years",
+      gender ~ "Gender",
+      weight_admit ~ "Weight at ICU Admission, kg",
+      creat_first ~ "First Creatinine, mg/dL",
+      creat_last ~ "Hospital Discharge Creatinine, mg/dL",
+      icu_days ~ "Time in ICU, days",
+      rrt_binary ~ "Renal replacement therapy",
+      hospital_expire_flag ~ "Hospital Mortality"
+    )
+  ) %>%
+  add_p() %>%
+  add_stat(
+    fns = everything() ~ add_by_n
+  ) %>%
+  modify_header(starts_with("add_n_stat") ~ "**N**") %>%
+  modify_table_body(
+    ~ .x %>%
+      dplyr::relocate(add_n_stat_1, .before = stat_1) %>%
+      dplyr::relocate(add_n_stat_2, .before = stat_2)
+  )
+
+aumc_exclusion_threshold
+```
+
+
+------------------------------------------------------------------------
+
+# Clinical Outcomes
+
+Describing the prevalence of oliguric-AKI upon admission and incidence at the first ICU day
+
+```{r}
+akis_all_long %>%
+  filter(group == "newcons") %>%
+  select(prevalnce_admit,
+         Incidence_first_72hr,
+         max_stage) %>%
+  drop_na(prevalnce_admit) %>%
+  transmute(
+    aki_binary = if_else(max_stage > 0, 1, 0),
+    max_stage = if_else(max_stage == 0, NA, max_stage),
+    prevalnce_admit
+  ) %>%
+  tbl_summary(
+    missing = "no",
+    digits = everything() ~ c(0, 1),
+    label = list(
+      aki_binary ~ "Oliguric-AKI on the first days",
+      prevalnce_admit ~ "Prevalence at admission",
+      max_stage ~ "Maximum KDIGO staging"
+    )
+  ) %>%
+  modify_column_indent(columns = label, 
+                       rows = c(FALSE, TRUE)) %>%
+  modify_column_indent(columns = label, 
+                       rows = c(FALSE, FALSE, TRUE, TRUE, TRUE),
+                       double_indent = TRUE)
+```
+
+```{r}
+aki_uo_analysis <- left_join(akis_all_wide, uo_ml_kg_hr, by = "STAY_ID") %>%
+  drop_na(FIRST_POSITIVE_STAGE_UO_CONS_TIME, 
+          TIME_INTERVAL_FINISH, 
+          MAX_STAGE_NEW_CONS) %>%
+  transmute(STAY_ID,
+         MAX_STAGE_NEW_CONS = as.character(MAX_STAGE_NEW_CONS),
+         FIRST_POSITIVE_STAGE_UO_CONS_TIME,
+         TIME_INTERVAL_FINISH,
+         UO_KG = ML_KG_HR
+         ) %>%
+  mutate(TIME = as.double(difftime(TIME_INTERVAL_FINISH, 
+                                   FIRST_POSITIVE_STAGE_UO_CONS_TIME, 
+                                   units = c("hour")))) %>%
+  filter(TIME >= -48 & TIME <= 48)
+```
+
+## First Oliguric-AKI Events
+
+table 1 for ICU stays with identified oliguric AKI in the first 72 hours of admission, stratified by max kdigo-uo stage (ICU stays with AKI at admission were excluded):
+
+```{r}
+table1_akis <- akis_all_wide  %>%
+  filter(MAX_STAGE_NEW_CONS >= 0) %>%
+  select(STAY_ID, MAX_STAGE_NEW_CONS) %>%
+  left_join(table_1, by = "STAY_ID")
+
+table_1_staging <- table1_akis %>%
+  select(
+    MAX_STAGE_NEW_CONS,
+    admission_age,
+    weight_admit,
+    gender,
+    creat_first,
+    creat_peak_72,
+    creat_last,
+    icu_days,
+    rrt_binary,
+    hospital_expire_flag
+  ) %>%
+  mutate(
+    staging = case_when(
+      MAX_STAGE_NEW_CONS == 0 ~ "No AKI",
+      MAX_STAGE_NEW_CONS == 1 ~ "Stage 1",
+      MAX_STAGE_NEW_CONS == 2 ~ "Stage 2",
+      MAX_STAGE_NEW_CONS == 3 ~ "Stage 3",
+      .default = NA
+    ),
+    .keep = "unused"
+  ) %>%
+  tbl_summary(
+    by = staging,
+    type = list(
+      c(hospital_expire_flag, rrt_binary) ~ "dichotomous",
+      c(
+        admission_age,
+        weight_admit,
+        creat_peak_72,
+        creat_first,
+        creat_last
+      ) ~ "continuous"
+    ),
+    statistic = c(
+      admission_age,
+      weight_admit,
+      creat_peak_72,
+      creat_first,
+      creat_last
+    ) ~ "{mean} ({sd})",
+    digits = icu_days ~ c(1,1),
     missing = "no",
     missing_text = "-",
     label = list(
       admission_age ~ "Age at Hospital Admission, years",
       gender ~ "Gender",
       weight_admit ~ "Weight at ICU Admission, kg",
-      creat_first ~ "First ICU Creatinine, mg/dL",
-      # scr_baseline ~ "Baseline Serum Creatinine, mg/dL",
+      creat_first ~ "First Creatinine, mg/dL",
+      creat_peak_72 ~ "Peak Creatinine at first days, mg/dL",
+      creat_last ~ "Hospital Discharge Creatinine, mg/dL",
       icu_days ~ "Time in ICU, days",
       rrt_binary ~ "Renal replacement therapy",
-      hospital_expire_flag ~ "Mortality"
-    ) 
+      hospital_expire_flag ~ "Hospital Mortality"
+    )
   ) %>%
-  add_p()
+  add_p(test = c(
+    admission_age,
+    weight_admit,
+    creat_peak_72,
+    creat_first,
+    creat_last
+  ) ~ "aov")
+
+table_1_staging
 ```
 
+UO onset at UOcons event:
+
 ```{r}
-aumc_uo_figure <- aki_uo_analysis %>% 
- ggplot(aes(TIME, UO_KG, color=PEAK_UO_STAGE, fill=PEAK_UO_STAGE))  + 
-           # linetype=PEAK_UO_STAGE))  + 
+aumc_uo_cons_figure <- aki_uo_analysis %>% 
+ggplot(aes(TIME, UO_KG, color=MAX_STAGE_NEW_CONS, fill=MAX_STAGE_NEW_CONS))  + 
+           # linetype=MAX_STAGE_NEW_CONS))  + 
   geom_hline(yintercept=0.3, size = 0.3, color = "#cccccc") +
   geom_hline(yintercept=0.5, size = 0.3, color = "#cccccc") +
   geom_vline(xintercept=0, size = 0.3, color = "black", linetype = "dashed") +
@@ -1358,68 +1786,47 @@ aumc_uo_figure <- aki_uo_analysis %>%
                fun.max = function(z) { quantile(z,0.75) },
                geom="ribbon", colour = NA, alpha=0.2) +
   labs(x="Time around AKI onset (hour)", y = "Urine output (ml/kg/hr)", 
-       # title="Hourly Urine Output at the Onset of Oliguric AKI Events",
        color="Maximum KDIGO-UO stage", fill="Maximum KDIGO-UO stage") + 
-       # linetype="Peak AKI stage") + 
   theme_classic() + # remove panel background and gridlines
-  # annotate("rect", xmin = -24, xmax = 48, ymin = 0, ymax = 0.5,
-  #          alpha = .1) +
-  # annotate("rect", xmin = -24, xmax = 48, ymin = 0, ymax = 0.3,
-  #          alpha = .1) +
-  scale_colour_manual(values=c("#00a087ff", "#4dbbd5ff", "#e64b35ff")
-                      # ,labels=c("1 (N=12,911)","2 (N=10,619)","3 (N=1,300)")
-                      ) +
-  scale_fill_manual(values=c("#00a087ff", "#4dbbd5ff", "#e64b35ff")
-                    # ,labels=c("1 (N=12,911)","2 (N=10,619)","3 (N=1,300)")
-                      ) +
+  scale_color_manual(values = pal_jama("default")(4)[2:4]) +
+  scale_fill_manual(values = pal_jama("default")(4)[2:4]) +
   theme(
-    legend.position = "bottom",
-    plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-    plot.subtitle = element_text(size = 10, face = "bold"),
-    plot.caption = element_text(face = "italic")
+    legend.position = "none"
   )
-aumc_uo_figure
+
+aumc_uo_cons_figure
 ```
+
 
 \ 
 
 ## Survival Analysis
 ```{r}
-km_fit <- survfit2(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE, data = akis_excluded)
+km_fit <- survfit2(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide)
 
-aumc_survival_figure <- km_fit %>%
+aumc_survival_cons_figure <- km_fit %>%
 ggsurvfit(linewidth = 1) +
-  add_confidence_interval() +
   add_quantile() +
-  scale_ggsurvfit(x_scales = list(breaks = seq(0, 30, by = 5))) +
-  coord_cartesian(xlim = c(0, 30)) +
+  scale_ggsurvfit(x_scales = list(breaks = seq(0, 90, by = 15))) +
+  coord_cartesian(xlim = c(-5, 95)) +
   theme_classic() +
   labs(x="Days", y = "Survival", 
-       # title="30-Days Survival Analysis",
-       # subtitle = "Stratified by first hospitalization AKI event peak staging", 
        color='Maximum KDIGO-UO stage', fill='Maximum KDIGO-UO stage') +
-  scale_colour_manual(values=c("#00a087ff", "#4dbbd5ff", "#e64b35ff"),
-                    labels=c("1","2","3")) +
-  scale_fill_manual(values=c("#00a087ff", "#4dbbd5ff", "#e64b35ff"),
-                    labels=c("1","2","3")) +
+  scale_color_jama() +
+  scale_fill_jama() +
   theme(legend.position = "bottom",
         plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
-        plot.subtitle = element_text(size = 10, face = "bold"))
-  # + add_pvalue(caption = "Log-rank {p.value}")
+        plot.subtitle = element_text(size = 10, face = "bold")) +
+  add_risktable() +
+  add_pvalue(caption = "Log-rank {p.value}")
 
-aumc_survival_figure
+aumc_survival_cons_figure
 ```
 
 **table of survival probabilities:**
 ```{r}
-survfit2(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ 1,
-           data = akis_excluded) %>% tbl_survfit(times = c(7, 30),
-                                                 label = "Maximum KDIGO-UO stage",
-                                                 label_header = "**Day {time}**")
-
 aumc_survival_table <-
-  survfit2(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE,
-           data = akis_excluded) %>% tbl_survfit(times = c(7, 30),
+  km_fit %>% tbl_survfit(times = c(7, 30, 90, 365),
                                                  label = "Maximum KDIGO-UO stage",
                                                  label_header = "**Day {time}**")
 aumc_survival_table
@@ -1427,43 +1834,86 @@ aumc_survival_table
 
 **Log rank for each pair:**
 ```{r}
-survdiff(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE, 
-         data = akis_excluded)
+survdiff(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide)
 
-akis_excluded_non_1 <- akis_excluded %>%
-  filter(PEAK_UO_STAGE != 1)
-survdiff(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE, 
-         data = akis_excluded_non_1)
+akis_all_wide_non_01 <- akis_all_wide %>%
+  filter(MAX_STAGE_NEW_CONS == 0 | MAX_STAGE_NEW_CONS == 1)
+survdiff(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_01)
 
-akis_excluded_non_2 <- akis_excluded %>%
-  filter(PEAK_UO_STAGE != 2)
-survdiff(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE, 
-         data = akis_excluded_non_2)
+akis_all_wide_non_12 <- akis_all_wide %>%
+  filter(MAX_STAGE_NEW_CONS == 1 | MAX_STAGE_NEW_CONS == 2)
+survdiff(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_12)
 
-akis_excluded_non_3 <- akis_excluded %>%
-  filter(PEAK_UO_STAGE != 3)
-survdiff(Surv(FIRST_AKI_TO_DEATH_OR_DISCH, HADM_DEATH_FLAG) ~ PEAK_UO_STAGE, 
-         data = akis_excluded_non_3)
+akis_all_wide_non_23 <- akis_all_wide %>%
+  filter(MAX_STAGE_NEW_CONS == 2 | MAX_STAGE_NEW_CONS == 3)
+survdiff(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_23)
 ```
 
 ```{r}
-aumc_aki_epi <- aki_epi
-aumc_akis <- akis
+# aumc_aki_epi <- aki_epi
+# aumc_akis <- akis
 aumc_t1a <- t1a
 aumc_t1b <- t1b
 aumc_table_1 <- table_1
+aumc_table_1_akis <- table1_akis
 aumc_uo_rate <- uo_rate
+aumc_aki_epi <- akis_all_long %>%
+  filter(group == "newcons")
+aumc_akis_all_wide <- akis_all_wide
+aumc_table_1_staging <- table_1_staging
+aumc_rr_table_data <- rr_table_data
 
-save(aumc_aki_epi,
-     aumc_akis,
-     aumc_t1a,
+save(aumc_t1a,
      aumc_t1b,
      aumc_table_1,
+     aumc_table_1_akis,
      aumc_uo_rate,
-     aumc_uo_figure,
-     aumc_survival_figure,
+     aumc_uo_cons_figure,
+     aumc_survival_cons_figure,
      aumc_survival_table,
+     aumc_aki_epi,
+     aumc_akis_all_wide,
+     aumc_table_1_staging,
+     aumc_rr_table_data,
      file = "paper_aumc.Rda")
+```
+
+
+```{r}
+aumc_uo_rate <- uo_rate
+aumc_hourly_uo <- hourly_uo
+aumc_raw_uo_eligible <- raw_uo_eligible
+
+save(
+  bS3a,
+  bS6_a,
+  bS6_b,
+  # bS7_a,
+  # bS7_b,
+  bS7_c,
+  bS7_d,
+  # bS8_a,
+  # bS8_b,
+  bS8_c,
+  bS8_d,
+  bS8_e,
+  # bS8_f,
+  bS9_a,
+  bS9_b,
+  bS9_c,
+  bS9_d,
+  bS11,
+  # aumc_uo_rate,
+  # aumc_hourly_uo,
+  # aumc_raw_uo_eligible,
+  aumc_exclusion_threshold,
+  aumc_kdigo_inter_aki_table,
+  aumc_kdigo_inter_cons_mean,
+  aumc_kdigo_inter_bic,
+  aumc_kdigo_inter_survival_table,
+  aumc_kdigo_inter_survival_figure,
+  file = "bs_data.Rda"
+)
 ```
 
 ------------------------------------------------------------------------

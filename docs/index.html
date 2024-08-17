@@ -1595,7 +1595,7 @@ Shitrit, Karny Ilan, Sharon Einav, Lior Fuchs</h4>
 <!-- #    For more information and instruction see the GitHub repository.      # -->
 <!-- #                                                                         # -->
 <!-- # 2. Please use 'Knit with Parameters' to provide your billing account    # -->
-<!-- #    for Google's BigQuery that is credentialed for PhysioNet/MIMIC-IV.   # -->
+<!-- #    for Google's BigQuery.                                               # -->
 <!-- ########################################################################### -->
 <p> </p>
 <p>This is a full reproduction for the results of the validation cohort
@@ -2642,7 +2642,7 @@ analysis</strong></p>
 <pre class="r"><code>first_icu_stay &lt;-
   dbGetQuery(
     con,
-    &quot;SELECT patientid, admissionid FIRST_STAY_ID_IN_PATIENT FROM `amsterdamumcdb102.original.admissions`
+    &quot;SELECT patientid, admissionid FIRST_STAY_ID_IN_PATIENT FROM `original.admissions`
 where admissioncount = 1&quot;
   )
 

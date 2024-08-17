@@ -1,4 +1,4 @@
-CREATE OR REPLACE TABLE `aumc_uo_and_aki.b_uo_rate` AS
+CREATE OR REPLACE TABLE `aumc_uo_and_aki.b_uo_rate_temp` AS
 
 -- UO rate table with validity according to time interval length and 
 -- source (cut-off for 95% precentile)
@@ -33,7 +33,7 @@ WITH
             LEFT JOIN `aumc_uo_and_aki.a_urine_output_raw` b ON b.STAY_ID = a.STAY_ID
             AND b.CHARTTIME < a.CHARTTIME
             -- The rates for right and left nephrostomy and ileoconduit will be calculated from 
-            -- the last identical item as each of them represents a different compartment 
+            -- the last identical item as each of them represents a different and unique compartment 
             -- other than the urinary bladder.
             AND IF(
                 a.ITEMID IN (10743, 10745, 8803),
@@ -82,10 +82,66 @@ WITH
             AND VALUE >= 0
             AND VALUE < 5000
             AND lower(SERVICE) != "mc"          
+    ),
+    interval_precentiles_approx AS (
+        -- Calculating 95th precentile for all and for less than 20ml urine output recoreds by source type
+        SELECT
+            SOURCE,
+            APPROX_QUANTILES(TIME_INTERVAL, 100) [OFFSET(95)] AS percentile95_all,
+            APPROX_QUANTILES(TIME_INTERVAL, 100) [OFFSET(99)] AS percentile99_all,
+            APPROX_QUANTILES(
+                (
+                    CASE
+                        WHEN (VALUE / (TIME_INTERVAL / 60)) <= 20 THEN TIME_INTERVAL
+                    END
+                ),
+                100
+            ) [OFFSET(95)] AS percentile95_20,
+            APPROX_QUANTILES(
+                (
+                    CASE
+                        WHEN (VALUE / (TIME_INTERVAL / 60)) <= 20 THEN TIME_INTERVAL
+                    END
+                ),
+                100
+            ) [OFFSET(99)] AS percentile99_20
+        FROM
+            (
+                SELECT
+                    * EXCEPT (SOURCE),
+                    IF(
+                        SOURCE = "R Nephrostomy"
+                        OR SOURCE = "L Nephrostomy",
+                        "Nephrostomy",
+                        SOURCE
+                    ) AS SOURCE,
+                FROM
+                    excluding
+            )
+        GROUP BY
+            SOURCE
+    ),
+    added_validity AS (
+        -- Evaluate validity by setting cut-off value for maximal interval time by output source.
+        -- Cut-off value is set to the highest out of 95th precentile for all or for zero output records.
+        SELECT
+            a.*,
+            -- Used for sensetivity analysis:
+            b.percentile95_all,
+            b.percentile99_all,
+            b.percentile95_20,
+            percentile99_20
+        FROM
+            excluding a
+            LEFT JOIN interval_precentiles_approx b ON b.SOURCE = a.SOURCE
+            OR (
+                b.SOURCE = "Nephrostomy"
+                AND a.SOURCE LIKE "%Nephrostomy"
+            )
     )
     -- Hourly rate is finally calculated
 SELECT
-    *,
+    a.*,
     VALUE / (TIME_INTERVAL / 60) AS HOURLY_RATE
 FROM
-    excluding
+    added_validity a

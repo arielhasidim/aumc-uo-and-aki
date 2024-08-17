@@ -1,11 +1,5 @@
 CREATE OR REPLACE TABLE
-  `aumc_uo_and_aki.d3_kdigo_stages` AS
-  -- This query checks if the patient had AKI according to KDIGO 2012 AKI guideline.
-  -- AKI is calculated every time a urine output (UO) measurement occurs.
-  -- Hourly UOs are imputed according to DOI:XXX
-  -- KDIGO-UO are calculated twice:
-  --  1. For an avarage UO rates per KG for 6, 12 and 24 hours (aki_stage_uo_mean)
-  --  2. For hourly UO rates per KG in a consecutive manner for 6, 12 and 24 hours (aki_stage_uo_cons)
+  `aumc_uo_and_aki.d3_kdigo_stages_9920_temp` AS
 WITH
   uo_stg AS ( -- stages for UO
     SELECT
@@ -49,7 +43,7 @@ WITH
         ELSE 0
       END AS aki_stage_uo_cons
     FROM
-      `aumc_uo_and_aki.d1_kdigo_uo` uo
+      `aumc_uo_and_aki.d1_kdigo_uo_9920_temp` uo
   ),
   tm_stg AS ( -- get all chart times documented
     SELECT
@@ -70,12 +64,6 @@ SELECT
   uo.uo_max_kg_24hr,
   uo.aki_stage_uo_mean,
   uo.aki_stage_uo_cons,
-  GREATEST( -- Classify AKI using both creatinine/urine output/active RRT criteria
-    COALESCE(uo.aki_stage_uo_mean, 0)
-  ) AS aki_stage_mean,
-  GREATEST( -- Classify AKI using both creatinine/urine output/active RRT criteria
-    COALESCE(uo.aki_stage_uo_cons, 0)
-  ) AS aki_stage_cons
 FROM
   `original.admissions` ie
   LEFT JOIN tm_stg tm ON ie.admissionid = tm.stay_id -- get all possible charttimes as listed in tm_stg

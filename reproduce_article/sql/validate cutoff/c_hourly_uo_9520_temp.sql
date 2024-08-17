@@ -1,15 +1,4 @@
-CREATE OR REPLACE TABLE `aumc_uo_and_aki.c_hourly_uo` AS
--- This query is used to create an "Hourly-adjusted UO rate" for every ICU stay. 
--- To achieve this, we divide the ICU stay into hourly intervals by determining 
--- the start and end times through the first and last UO measurements. We round 
--- down the CHARTTIME of the first UO measurement and round up the CHARTTIME of 
--- the last UO measurement. We list the hourly intervals for each ICU stay between 
--- these times. Next, we identify the UO rates that overlap with each hourly 
--- interval and note the proportion of overlap within that hour and the validity 
--- label of the UO rate. Finally, we calculate the hourly-adjusted UO rate by 
--- adding up the volumes of the overlapping portions of valid UO rates for each 
--- hour. We only calculate an adjusted value if UO rate is present for 
--- most of the hour.
+CREATE OR REPLACE TABLE `aumc_uo_and_aki.c_hourly_uo_9520_temp` AS
 
 WITH
   -- Array of numbers that represent total hours measured for specific STAY_ID 
@@ -48,7 +37,7 @@ WITH
         HOUR
       ) TIME_DIFF -- for testing reasons
     FROM
-      `aumc_uo_and_aki.b_uo_rate` uo
+      `aumc_uo_and_aki.b_uo_rate_temp` uo
     GROUP BY
       STAY_ID
   ),
@@ -95,9 +84,11 @@ WITH
       b.SOURCE
     FROM
       TIMES_WITH_INTERVALS a
-      LEFT JOIN `aumc_uo_and_aki.b_uo_rate` b ON b.STAY_ID = a.STAY_ID
+      LEFT JOIN `aumc_uo_and_aki.b_uo_rate_temp` b ON b.STAY_ID = a.STAY_ID
       AND b.CHARTTIME > a.TIME_INTERVAL_STARTS
       AND b.LAST_CHARTTIME < a.TIME_INTERVAL_FINISH
+      --  for sensetivity analysis:
+      AND b.TIME_INTERVAL < b.percentile95_20
   ),
   -- summing up rated per each hour by its proportion only if valid
   CALCULATION AS (
@@ -112,7 +103,7 @@ WITH
           GREATEST(TIME_INTERVAL_STARTS, MIN(LAST_CHARTTIME)),
           MINUTE
         ) / 60
-      ) AS HOURLY_WEIGHTED_MEAN_RATE,
+      ) AS HOURLY_VALID_WEIGHTED_MEAN_RATE,
       GREATEST(TIME_INTERVAL_STARTS, MIN(LAST_CHARTTIME)) COVERED_START,
       LEAST(TIME_INTERVAL_FINISH, MAX(CHARTTIME)) COVERED_END,
       DATETIME_DIFF(
@@ -129,28 +120,29 @@ WITH
       TIME_INTERVAL_FINISH
   )
   -- final table. 
-  -- HOURLY_WEIGHTED_MEAN_RATE is presented only when we have UO rate for most of the hour
+  -- HOURLY_VALID_WEIGHTED_MEAN_RATE is presented only when we have UO rate for most of the hour
   -- also showing next to each hour simple uo value sum for comparison
-SELECT a.STAY_ID,
-a.T_PLUS,
-a.TIME_INTERVAL_STARTS,
-a.TIME_INTERVAL_FINISH,
-IF(
-  a.PROPORTION_COVERED > 0.5,
-  a.HOURLY_WEIGHTED_MEAN_RATE,
-  NULL
-  ) HOURLY_WEIGHTED_MEAN_RATE,
-IFNULL(SUM(b.VALUE), 0) SIMPLE_SUM,
-CASE
-  WHEN c.weightgroup LIKE "%59%" THEN 55
-  WHEN c.weightgroup LIKE "%60%" THEN 65
-  WHEN c.weightgroup LIKE "%70%" THEN 75
-  WHEN c.weightgroup LIKE "%80%" THEN 85
-  WHEN c.weightgroup LIKE "%90%" THEN 95
-  WHEN c.weightgroup LIKE "%100%" THEN 105
-  WHEN c.weightgroup LIKE "%110%" THEN 115
-  ELSE NULL
-END AS WEIGHT_ADMIT
+SELECT
+  a.STAY_ID,
+  a.T_PLUS,
+  a.TIME_INTERVAL_STARTS,
+  a.TIME_INTERVAL_FINISH,
+  IF(
+    a.PROPORTION_COVERED > 0.5,
+    a.HOURLY_VALID_WEIGHTED_MEAN_RATE,
+    NULL
+  ) HOURLY_VALID_WEIGHTED_MEAN_RATE,
+  IFNULL(SUM(b.VALUE), 0) SIMPLE_SUM,
+  CASE
+    WHEN c.weightgroup LIKE "%59%" THEN 55
+    WHEN c.weightgroup LIKE "%60%" THEN 65
+    WHEN c.weightgroup LIKE "%70%" THEN 75
+    WHEN c.weightgroup LIKE "%80%" THEN 85
+    WHEN c.weightgroup LIKE "%90%" THEN 95
+    WHEN c.weightgroup LIKE "%100%" THEN 105
+    WHEN c.weightgroup LIKE "%110%" THEN 115
+    ELSE NULL
+  END AS WEIGHT_ADMIT
 FROM
   CALCULATION a
   LEFT JOIN `aumc_uo_and_aki.a_urine_output_raw` b ON b.STAY_ID = a.STAY_ID
@@ -163,5 +155,5 @@ GROUP BY
   a.TIME_INTERVAL_STARTS,
   a.TIME_INTERVAL_FINISH,
   a.PROPORTION_COVERED,
-  a.HOURLY_WEIGHTED_MEAN_RATE,
+  a.HOURLY_VALID_WEIGHTED_MEAN_RATE,
   c.weightgroup
