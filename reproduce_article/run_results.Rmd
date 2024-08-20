@@ -1632,7 +1632,8 @@ aumc_exclusion_threshold <- validity_threshold_long %>%
   modify_table_body(
     ~ .x %>%
       dplyr::relocate(add_n_stat_1, .before = stat_1) %>%
-      dplyr::relocate(add_n_stat_2, .before = stat_2)
+      dplyr::relocate(add_n_stat_2, .before = stat_2) %>%
+      dplyr::relocate(add_n_stat_3, .before = stat_3)
   )
 
 aumc_exclusion_threshold
