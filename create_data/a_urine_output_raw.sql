@@ -32,6 +32,7 @@ SELECT
             INTERVAL CAST((n.measuredat / 1000) AS INT64) SECOND
         )
     END AS CHARTTIME,
+    n.measuredat MEASUREDAT,
     n.VALUE,
     n.ITEMID,
     CASE
