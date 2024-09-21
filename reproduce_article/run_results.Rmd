@@ -34,7 +34,7 @@ if (!require("pacman")) install.packages("pacman")
 pacman::p_load(pacman, DBI, bigrquery, tidyverse, reshape2, finalfit, psych, ggplot2, 
                ggbreak,scales,ggpmisc, ggforce, rlang, quantreg, broom, kableExtra, 
                rmdformats, survival, survminer, nortest, gtsummary,
-               ggsci, ggsurvfit, gt, rms) 
+               ggsci, ggsurvfit, gt, rms, marginaleffects) 
 
 # Establish connection with BigQuery and billing acount with the correct access
 con <- dbConnect(
@@ -92,12 +92,18 @@ akis_all_wide <- dbGetQuery(con, statement = read_file('sql/akis.sql')) %>%
                             FOLLOWUP_DAYS < 8, 1, 0),
     mortality_30 = if_else(DEATH_FLAG == 1 &
                              FOLLOWUP_DAYS < 31, 1, 0),
-    morality_90_days = if_else(FOLLOWUP_DAYS < 91 &
+    mortality_90 = if_else(FOLLOWUP_DAYS < 91 &
                                  DEATH_FLAG == 1, 1, 0)
   )
 
 akis_all_long <- akis_all_wide %>%
-  select(!FIRST_POSITIVE_STAGE_UO_CONS_TIME) %>%
+  select(-FIRST_POSITIVE_STAGE_UO_CONS_TIME,
+         -FIRST_POSITIVE_STAGE_UO_MEAN_TIME) %>%
+  left_join((
+    table_1 %>%
+      select(STAY_ID, admission_age, gender, weight_admit)
+  ),
+  by = "STAY_ID") %>%
   mutate(
     max_stage.newcons = MAX_STAGE_NEW_CONS,
     max_stage.newmean = MAX_STAGE_NEW_MEAN,
@@ -113,9 +119,12 @@ akis_all_long <- akis_all_wide %>%
       SUBJECT_ID,
       FOLLOWUP_DAYS,
       DEATH_FLAG,
+      admission_age,
+      gender,
+      weight_admit,
       mortality_7,
       mortality_30,
-      morality_90_days
+      mortality_90
     ),
     names_sep = "\\.",
     names_to = c(".value", "group")
@@ -1243,6 +1252,31 @@ aumc_kdigo_inter_aki_table <- akis_all_long %>%
 aumc_kdigo_inter_aki_table
 ```
 
+check for mortality overdispration:
+```{r}
+model_binom <- glm(
+  mortality_30 ~ stage_newcons,
+  family = binomial,
+  data = (
+    akis_all_long %>%
+      filter(group == "newcons") %>%
+      mutate(stage_newcons = as.factor(max_stage))
+  )
+)
+
+model_overdispersed <- glm(
+  mortality_30 ~ stage_newcons,
+  family = quasibinomial,
+  data = (
+    akis_all_long %>%
+      filter(group == "newcons") %>%
+      mutate(stage_newcons = as.factor(max_stage))
+  )
+)
+
+pchisq(summary(model_overdispersed)$dispersion * model_binom$df.residual, 
+       model_binom$df.residual, lower = F)
+```
 
 ```{r}
 aumc_kdigo_inter_cons_mean <- akis_all_long %>%
@@ -1352,15 +1386,16 @@ aumc_kdigo_inter_bic
 ```
 
 ```{r}
+akis_all_long_complete <- akis_all_long %>% drop_na(max_stage)
+
 # descriptive
-descriptive_tbl <- akis_all_long %>%
+descriptive_tbl <- akis_all_long_complete %>%
   group_by(group, max_stage) %>%
   summarise(
     n = n(),
-    dead = sum(DEATH_FLAG),
-    mortality_prop = sum(DEATH_FLAG) / n()
+    dead = sum(mortality_30),
+    mortality_prop = sum(mortality_30) / n()
   ) %>%
-  # drop_na() %>%
   group_by(group) %>%
   transmute(
     max_stage,
@@ -1373,20 +1408,20 @@ descriptive_tbl <- akis_all_long %>%
 
 # glm
 m1 <- glm(
-  DEATH_FLAG ~ stage_newcons,
+  mortality_30 ~ stage_newcons,
   family = binomial,
   data = (
-    akis_all_long %>%
+    akis_all_long_complete %>%
       filter(group == "newcons") %>%
       mutate(stage_newcons = as.factor(max_stage))
   )
 )
 
 m2 <- glm(
-  DEATH_FLAG ~ stage_newmean,
+  mortality_30 ~ stage_newmean,
   family = binomial,
   data = (
-    akis_all_long %>%
+    akis_all_long_complete %>%
       filter(group == "newmean") %>%
       mutate(stage_newmean = as.factor(max_stage))
   )
@@ -1433,13 +1468,112 @@ aumc_kdigo_inter_survival_table <- rr_table_data %>%
     row_group_as_column = TRUE
   ) %>%
   tab_stubhead(label = "Criteria / Stage") %>%
-  tab_spanner(label = "Univariate analysis", columns = c("OR (95% CI)", "P value")) %>%
-  tab_source_note(source_note = md("For all urine sources")) %>%
-  tab_source_note(source_note = md("KDIGO stage was calculated diffrently"))
+  tab_spanner(label = "Univariate analysis", columns = c("OR (95% CI)", "P value"))
 
 aumc_kdigo_inter_survival_table
 ```
 
+adjusted models:
+```{r}
+m1_adj1 <- glm(
+  mortality_30 ~ stage_newcons * (
+    admission_age + gender + weight_admit + first_stage
+  ),
+  family = binomial,
+  data = (
+    akis_all_long_complete %>%
+      filter(group == "newcons") %>%
+      mutate(stage_newcons = as.factor(max_stage))
+  )
+)
+
+mrg_efct_m1_adj1 <- avg_comparisons(
+  m1_adj1,
+  variables = "stage_newcons",
+  comparison = "lnoravg",
+  transform = exp
+)
+
+rr_table_data_m1_adj1 <- mrg_efct_m1_adj1 %>%
+    transmute(
+      group = "newcons",
+      max_stage = as.factor(dplyr::row_number()),
+      estimate = paste0(round(estimate, 2), " (",round(conf.low, 2), "-", round(conf.high, 2), ")"),
+      p.value
+    ) %>% add_row(group = "newcons", max_stage = "0", .before = 0) %>%
+    transmute(
+    group,
+    max_stage,
+    or.adj1 = if_else(is.na(estimate), "1 [Reference]", estimate),
+    p.adj1 = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.001 ~ "<.001",
+      .default = as.character(round(p.value, 2))
+    )
+  )
+
+m2_adj1 <- glm(
+  mortality_30 ~ stage_newmean * (
+    admission_age + weight_admit + gender + first_stage
+  ),
+  family = binomial,
+  data = (
+    akis_all_long_complete %>%
+      filter(group == "newmean") %>%
+      mutate(stage_newmean = as.factor(max_stage))
+  )
+)
+
+mrg_efct_m2_adj1 <- avg_comparisons(
+  m2_adj1,
+  variables = "stage_newmean",
+  comparison = "lnoravg",
+  transform = exp
+)
+
+rr_table_data_m2_adj1 <- mrg_efct_m2_adj1 %>%
+    transmute(
+      group = "newmean",
+      max_stage = as.factor(dplyr::row_number()),
+      estimate = paste0(round(estimate, 2), " (",round(conf.low, 2), "-", round(conf.high, 2), ")"),
+      p.value
+    ) %>% add_row(group = "newmean", max_stage = "0", .before = 0) %>%
+    transmute(
+    group,
+    max_stage,
+    or.adj1 = if_else(is.na(estimate), "1 [Reference]", estimate),
+    p.adj1 = case_when(
+      is.na(p.value) ~ "NA",
+      p.value < 0.001 ~ "<.001",
+      .default = as.character(round(p.value, 2))
+    )
+  )
+
+
+aumc_kdigo_inter_survival_table_adj <- rr_table_data %>% 
+  left_join(bind_rows(rr_table_data_m1_adj1, rr_table_data_m2_adj1)) %>%
+  mutate(
+    group = case_when(
+      group == "newcons" ~ 'UO-Consecutive',
+      group == "newmean" ~ 'UO-Average',
+    )
+  ) %>%
+  gt(
+    rowname_col = "max_stage",
+    groupname_col = "group",
+    row_group_as_column = TRUE
+  ) %>%
+  cols_label(
+    or.adj1 = "OR (95% CI)"
+  ) %>%
+  tab_stubhead(label = "Criteria / Stage") %>%
+  tab_spanner(label = "Unadjusted OR", columns = c("OR (95% CI)", "P value")) %>%
+  tab_spanner(label = "Adjusted Model 1", columns = c(or.adj1, p.adj1), id = "adj1") %>%
+  tab_footnote(
+    footnote = "Model include age, weight, gender and whether diagnosed on admission",
+    locations = cells_column_spanners(spanners = "adj1")
+  )
+```
 
 ```{r}
 km_fit_newcons <-
@@ -1455,8 +1589,8 @@ mimic_survival_figure_newcons <- km_fit_newcons %>%
 ggsurvfit(linewidth = 1) +
   add_confidence_interval() +
   add_quantile() +
-  scale_ggsurvfit(x_scales = list(breaks = seq(0, 90, by = 5))) +
-  coord_cartesian(xlim = c(0, 90)) +
+  scale_ggsurvfit(x_scales = list(breaks = seq(0, 30, by = 5))) +
+  coord_cartesian(xlim = c(0, 30)) +
   theme_classic() +
   scale_fill_discrete(labels=c('0', '1', '2', '3')) +
   scale_color_discrete(labels=c('0', '1', '2', '3')) +
@@ -1470,8 +1604,8 @@ ggsurvfit(linewidth = 1) +
   add_quantile() +
   scale_fill_discrete(labels=c('0', '1', '2', '3')) +
   scale_color_discrete(labels=c('0', '1', '2', '3')) +
-  scale_ggsurvfit(x_scales = list(breaks = seq(0, 90, by = 5))) +
-  coord_cartesian(xlim = c(0, 90)) +
+  scale_ggsurvfit(x_scales = list(breaks = seq(0, 30, by = 5))) +
+  coord_cartesian(xlim = c(0, 30)) +
   theme_classic() +
   labs(x="Days", y = "Survival",title = "UOmean",
        color='Maximum KDIGO-UO stage', fill='Maximum KDIGO-UO stage') +
@@ -1491,7 +1625,7 @@ aumc_kdigo_inter_survival_figure
 
 # Sensitivity Analysis: Validity Threshold for Durations of Collection
 
-```{r create data for threshold analysis, include=FALSE}
+```{r create data for threshold analysis, include=FALSE, cache=TRUE}
 dbSendQuery(con, statement = read_file('sql/validate cutoff/b_uo_rate_temp.sql'))
 
 dbSendQuery(con, statement = read_file('sql/validate cutoff/c_hourly_uo_9520_temp.sql'))
@@ -1532,7 +1666,7 @@ validity_threshold_long <- validity_threshold_wide %>%
     names_to = c(".value", "group")
   ) %>%
   mutate(
-    morality_90_days = if_else(FOLLOWUP_DAYS < 91 &
+    mortality_90 = if_else(FOLLOWUP_DAYS < 91 &
                                  DEATH_FLAG == 1, 1, 0),
     prevalnce_admit = if_else(first_stage > 0, 1, 0),
     Incidence_first_72hr = case_when(first_stage > 0 ~ NA, max_stage == 0 ~ 0, max_stage > 0 ~ 1),
@@ -1803,13 +1937,12 @@ aumc_uo_cons_figure
 
 ## Survival Analysis
 ```{r}
-km_fit <- survfit2(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide)
+km_fit <- survfit2(Surv(FOLLOWUP_DAYS, mortality_30) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide)
 
 aumc_survival_cons_figure <- km_fit %>%
 ggsurvfit(linewidth = 1) +
-  add_quantile() +
-  scale_ggsurvfit(x_scales = list(breaks = seq(0, 90, by = 15))) +
-  coord_cartesian(xlim = c(-5, 95)) +
+  scale_ggsurvfit(x_scales = list(breaks = seq(0, 30, by = 5))) +
+  coord_cartesian(xlim = c(-1, 35)) +
   theme_classic() +
   labs(x="Days", y = "Survival", 
        color='Maximum KDIGO-UO stage', fill='Maximum KDIGO-UO stage') +
@@ -1835,19 +1968,19 @@ aumc_survival_table
 
 **Log rank for each pair:**
 ```{r}
-survdiff(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide)
+survdiff(Surv(FOLLOWUP_DAYS, mortality_30) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide)
 
 akis_all_wide_non_01 <- akis_all_wide %>%
   filter(MAX_STAGE_NEW_CONS == 0 | MAX_STAGE_NEW_CONS == 1)
-survdiff(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_01)
+survdiff(Surv(FOLLOWUP_DAYS, mortality_30) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_01)
 
 akis_all_wide_non_12 <- akis_all_wide %>%
   filter(MAX_STAGE_NEW_CONS == 1 | MAX_STAGE_NEW_CONS == 2)
-survdiff(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_12)
+survdiff(Surv(FOLLOWUP_DAYS, mortality_30) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_12)
 
 akis_all_wide_non_23 <- akis_all_wide %>%
   filter(MAX_STAGE_NEW_CONS == 2 | MAX_STAGE_NEW_CONS == 3)
-survdiff(Surv(FOLLOWUP_DAYS, DEATH_FLAG) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_23)
+survdiff(Surv(FOLLOWUP_DAYS, mortality_30) ~ MAX_STAGE_NEW_CONS, data = akis_all_wide_non_23)
 ```
 
 ```{r}
@@ -1863,6 +1996,8 @@ aumc_aki_epi <- akis_all_long %>%
 aumc_akis_all_wide <- akis_all_wide
 aumc_table_1_staging <- table_1_staging
 aumc_rr_table_data <- rr_table_data
+aumc_rr_table_data_adj <- rr_table_data %>% 
+  left_join(bind_rows(rr_table_data_m1_adj1, rr_table_data_m2_adj1))
 
 save(aumc_t1a,
      aumc_t1b,
@@ -1876,6 +2011,7 @@ save(aumc_t1a,
      aumc_akis_all_wide,
      aumc_table_1_staging,
      aumc_rr_table_data,
+     aumc_rr_table_data_adj,
      file = "paper_aumc.Rda")
 ```
 
@@ -1912,6 +2048,7 @@ save(
   aumc_kdigo_inter_cons_mean,
   aumc_kdigo_inter_bic,
   aumc_kdigo_inter_survival_table,
+  aumc_kdigo_inter_survival_table_adj,
   aumc_kdigo_inter_survival_figure,
   file = "bs_data.Rda"
 )
