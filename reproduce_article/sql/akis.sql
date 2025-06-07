@@ -23,6 +23,16 @@ WITH
 SELECT
     a.admissionid STAY_ID,
     a.patientid SUBJECT_ID,
+    CASE
+      WHEN a.weightgroup LIKE "%59%" THEN 55
+      WHEN a.weightgroup LIKE "%60%" THEN 65
+      WHEN a.weightgroup LIKE "%70%" THEN 75
+      WHEN a.weightgroup LIKE "%80%" THEN 85
+      WHEN a.weightgroup LIKE "%90%" THEN 95
+      WHEN a.weightgroup LIKE "%100%" THEN 105
+      WHEN a.weightgroup LIKE "%110%" THEN 115
+      ELSE NULL
+  END AS WEIGHT_ADMIT,
     d.FIRST_STAGE_UO_CONS AS FIRST_STAGE_NEW_CONS,
     d.AKI_STAGE_UO_CONS AS MAX_STAGE_NEW_CONS,
     d.FIRST_POSITIVE_STAGE_UO_CONS_TIME,

@@ -62,6 +62,16 @@ SELECT
   ie.patientid subject_id,
   ie.admissionid stay_id,
   tm.charttime,
+  CASE
+      WHEN w.weightgroup LIKE "%59%" THEN 55
+      WHEN w.weightgroup LIKE "%60%" THEN 65
+      WHEN w.weightgroup LIKE "%70%" THEN 75
+      WHEN w.weightgroup LIKE "%80%" THEN 85
+      WHEN w.weightgroup LIKE "%90%" THEN 95
+      WHEN w.weightgroup LIKE "%100%" THEN 105
+      WHEN w.weightgroup LIKE "%110%" THEN 115
+      ELSE NULL
+  END AS WEIGHT_ADMIT,
   uo.uo_rt_kg_6hr,
   uo.uo_rt_kg_12hr,
   uo.uo_rt_kg_24hr,
@@ -81,3 +91,4 @@ FROM
   LEFT JOIN tm_stg tm ON ie.admissionid = tm.stay_id -- get all possible charttimes as listed in tm_stg
   LEFT JOIN uo_stg uo ON ie.admissionid = uo.stay_id
   AND tm.charttime = uo.charttime
+  LEFT JOIN `original.admissions` w ON w.admissionid = ie.admissionid
