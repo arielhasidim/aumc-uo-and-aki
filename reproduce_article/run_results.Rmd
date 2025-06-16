@@ -148,9 +148,7 @@ This is a full reproduction for the results of the validation cohort (AUMCdb).
 
 ### Citation
 
-.............
-
-.............
+> Hasidim, A.A., Klein, M.A., Ben Shitrit, I. et al. *Toward the standardization of big datasets of urine output for AKI analysis: a multicenter validation study.* **Sci Rep** 15, 20009 (2025). https://doi.org/10.1038/s41598-025-95535-4
 
 ------------------------------------------------------------------------
 
